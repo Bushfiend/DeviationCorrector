@@ -450,7 +450,7 @@ namespace IngameScript
                     RaycastArray.Add(block as IMyCameraBlock);
                     ((IMyCameraBlock)block).EnableRaycast = true;
                 }
-                RC = new RaycastHoming(RaycastRange);
+                RC = new RaycastHoming(RaycastRange, 3, 250, Me.CubeGrid.EntityId);
             }
 
             GridTerminalSystem.GetBlocksOfType(Controllers);
