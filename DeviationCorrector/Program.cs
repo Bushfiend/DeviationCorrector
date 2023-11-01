@@ -33,7 +33,9 @@ namespace IngameScript
 
         const double GameTick = 0.016;
 
-        MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/SemiAutoPistolMagazine");
+        //MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/SemiAutoPistolMagazine");
+        MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/FlareClip");
+
         int NukeAmmoAmount = 10000;
         HashSet<MyDefinitionId> WeaponcoreDefinitions = new HashSet<MyDefinitionId>();
         Dictionary<long, long> EngagedTargets = new Dictionary<long, long>();
@@ -111,7 +113,7 @@ namespace IngameScript
 
             if (Mode == FireMode.Sentry)
             {
-                SentryUpdate(2800);
+                SentryUpdate(2000);
             }
 
             switch (argument)
@@ -986,7 +988,7 @@ namespace IngameScript
             private double _spin = 0;
             private double _pngGain = 2.5;
             private double _mass = 0;
-            private double _detonationDistance = 60;
+            private double _detonationDistance = 90;
 
             private int _detonationDelay = 0;
             private int _warheadCount = 0;
