@@ -78,15 +78,18 @@ namespace IngameScript
         public Program()
         {
             Runtime.UpdateFrequency = UpdateFrequency.Update1;
-            Setup();
         }
 
 
         int tick = 0;
-
         public void Main(string argument, UpdateType updateSource)
         {
             tick += 1;
+
+            if (!Setup())
+            {
+                return;
+            }
 
             UpdateMissileTargets();
             UpdateMissile(ref ActiveMissiles);
@@ -430,16 +433,29 @@ namespace IngameScript
             }
         }
 
-        void Setup()
+        bool setupCompleted = false;
+        bool Setup()
         {
-            Wc = new WcPbApi();
-            if (!Wc.Activate(Me))
+            if (setupCompleted)
             {
-                Echo("Weaponcore Failed to initialize.");
-                return;
+                return true;
             }
 
-            UsingWeaponcore = true;
+            Wc = new WcPbApi();
+            try
+            {
+                Echo("Activating Weaponcore API...");
+                Wc.Activate(Me);
+                UsingWeaponcore = true;
+            }
+            catch (Exception e)
+            {
+                Echo("WeaponCore Api is failing!\nMake sure WeaponCore is enabled!");
+                Echo(e.Message);
+                Echo(e.StackTrace);
+                return false;
+            }
+
             Wc.GetAllCoreWeapons(WeaponcoreDefinitions);
 
             var tempControllers = new List<IMyShipController>();
@@ -447,7 +463,7 @@ namespace IngameScript
             if (tempControllers.Count == 0)
             {
                 Echo("Setup Failed, No ship controllers found.");
-                return;
+                return false;
             }
             Reference = tempControllers.First();
 
@@ -456,7 +472,7 @@ namespace IngameScript
             if (scriptGroup == null)
             {
                 Echo($"Setup Failed, no group named {ScriptGroupName} found.");
-                return;
+                return false;
             }
 
             var tempBlocks = new List<IMyTerminalBlock>();
@@ -491,6 +507,8 @@ namespace IngameScript
             GridTerminalSystem.GetBlocksOfType(Controllers);
 
             Echo("Setup Complete");
+            setupCompleted = true;
+            return true;
         }
 
 
