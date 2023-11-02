@@ -105,15 +105,29 @@ namespace IngameScript
 
             GetMissiles(ref ProtoMissiles);
 
+            if (Mode == FireMode.Sentry)
+            {
+                SentryUpdate(2000);
+            }
+
             if (Firing)
             {
                 Firing = false;
                 return;
             }
 
-            if (Mode == FireMode.Sentry)
+            if (argument == string.Empty)
             {
-                SentryUpdate(2000);
+                // Avoid some work each tick
+                return;
+            }
+
+            if (argument.StartsWith("GPS:") && ParseVector3DFromGPS(argument, out GpsLocation))
+            {
+                Mode = FireMode.GPS;
+                Echo("Targeted GPS.");
+                Echo($"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), GpsLocation))}m");
+                return;
             }
 
             switch (argument)
