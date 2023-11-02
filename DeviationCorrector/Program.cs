@@ -31,7 +31,10 @@ namespace IngameScript
         const string MissileTag = "PVE";
         const string ScriptGroupName = "UDR";
 
+        int GuidanceDelay = 0; // seconds that the missile will fly in a straight line after being fired
+
         const double GameTick = 0.016;
+        const int TicksPerSecond = 60;
 
         //MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/SemiAutoPistolMagazine");
         MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/FlareClip");
@@ -165,10 +168,10 @@ namespace IngameScript
                 Echo("There are no missiles ready to fire.");
                 return;
             }
-            FireMissile(missile);
+            FireMissile(missile, GuidanceDelay * TicksPerSecond);
             Firing = true;
         }
-        
+
         MyDetectedEntityInfo? Raycast(ref List<IMyCameraBlock> cameras, float range)
         {
             MyDetectedEntityInfo? target = new MyDetectedEntityInfo?();
@@ -553,7 +556,7 @@ namespace IngameScript
             }
 
             EngagedTargets.Add(targetList.First().EntityId, targetList.First().TimeStamp);
-            FireMissile(missile, 5, targetList.First().EntityId);
+            FireMissile(missile, GuidanceDelay * TicksPerSecond + 5, targetList.First().EntityId);
         }
 
 
@@ -874,8 +877,6 @@ namespace IngameScript
                 {
                     Nuke();
                 }
-
-
             }
 
 
@@ -1837,8 +1838,5 @@ namespace IngameScript
             public MyDetectedEntityInfo? GetAiFocus(long shooter, int priority = 0) => _getAiFocus?.Invoke(shooter, priority);
 
         }
-
-
-
     }
 }
