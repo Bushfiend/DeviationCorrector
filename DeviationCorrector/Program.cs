@@ -31,7 +31,10 @@ namespace IngameScript
         const string MissileTag = "PVE";
         const string ScriptGroupName = "UDR";
 
+        int GuidanceDelay = 0; // seconds that the missile will fly in a straight line after being fired
+
         const double GameTick = 0.016;
+        const int TicksPerSecond = 60;
 
         //MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/SemiAutoPistolMagazine");
         MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/FlareClip");
@@ -75,13 +78,18 @@ namespace IngameScript
         public Program()
         {
             Runtime.UpdateFrequency = UpdateFrequency.Update1;
-            Setup();
         }
 
 
-
+        int tick = 0;
         public void Main(string argument, UpdateType updateSource)
         {
+            tick += 1;
+
+            if (!Setup())
+            {
+                return;
+            }
 
             UpdateMissileTargets();
             UpdateMissile(ref ActiveMissiles);
@@ -105,22 +113,39 @@ namespace IngameScript
 
             GetMissiles(ref ProtoMissiles);
 
+            if (Mode == FireMode.Sentry && tick % 10 == 0)
+            {
+                SentryUpdate(2000);
+            }
+
             if (Firing)
             {
                 Firing = false;
                 return;
             }
 
-            if (Mode == FireMode.Sentry)
+            if (argument == string.Empty)
             {
-                SentryUpdate(2000);
+                // Avoid some work each tick
+                return;
             }
 
-            switch (argument)
+            if (argument.StartsWith("GPS:") && ParseVector3DFromGPS(argument, out GpsLocation))
+            {
+                Mode = FireMode.GPS;
+                Echo("Targeted GPS.");
+                Echo($"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), GpsLocation))}m");
+                return;
+            }
+
+            var argumentParts = argument.Trim().ToLower().Split(new char[] { ' ' }, 2);
+            var command = argumentParts[0];
+            var commandArguments = argumentParts.Length > 1 && argumentParts[1].Trim().Length > 0 ? argumentParts[1].Trim() : null;
+
+            switch (command)
             {
                 case "fire":
-                    FireMissile(ref ProtoMissiles);
-                    Firing = true;
+                    FireCommand(commandArguments);
                     break;
                 case "raycast":
                     if (HasRaycast && Mode == FireMode.Raycast)
@@ -136,6 +161,18 @@ namespace IngameScript
                     RedirectMissiles();
                     break;
             }
+        }
+
+        void FireCommand(string nameFilter = null)
+        {
+            var missile = GetMissile(nameFilter);
+            if (missile == null)
+            {
+                Echo("There are no missiles ready to fire.");
+                return;
+            }
+            FireMissile(missile, GuidanceDelay * TicksPerSecond);
+            Firing = true;
         }
 
         MyDetectedEntityInfo? Raycast(ref List<IMyCameraBlock> cameras, float range)
@@ -276,17 +313,17 @@ namespace IngameScript
 
         }
 
-        void FireMissile(ref HashSet<IMyShipMergeBlock> protoMissiles, int trackingDelay = 0, long entityId = 0)
+        IMyShipMergeBlock GetMissile(string name = null)
         {
+            return ProtoMissiles.FirstOrDefault(missile => name == null || missile.CustomName.ToLower().Contains(name));
+        }
 
-            if (protoMissiles.Count == 0)
-                return;
-
+        void FireMissile(IMyShipMergeBlock mergeBlock, int trackingDelay = 0, long entityId = 0)
+        {
             var blocks = new List<IMyTerminalBlock>();
             GridTerminalSystem.GetBlocks(blocks);
 
-
-            var missile = new DeviationCorrector(protoMissiles.Last(), blocks, Reference, $"Missile-{Rand.Next(1, 20000)}", trackingDelay);
+            var missile = new DeviationCorrector(mergeBlock, blocks, Reference, $"Missile-{Rand.Next(1, 20000)}", trackingDelay);
 
             switch (Mode)
             {
@@ -325,10 +362,11 @@ namespace IngameScript
 
             int index = Rand.Next(Quotes.Length);
             missile.HudText = Quotes[index];
+
             ActiveMissiles.Add(missile);
+            ProtoMissiles.Remove(mergeBlock);
 
-
-            protoMissiles.Remove(missile.Merge);
+            Echo("Missile launched!");
         }
 
 
@@ -395,16 +433,29 @@ namespace IngameScript
             }
         }
 
-        void Setup()
+        bool setupCompleted = false;
+        bool Setup()
         {
-            Wc = new WcPbApi();
-            if (!Wc.Activate(Me))
+            if (setupCompleted)
             {
-                Echo("Weaponcore Failed to initialize.");
-                return;
+                return true;
             }
 
-            UsingWeaponcore = true;
+            Wc = new WcPbApi();
+            try
+            {
+                Echo("Activating Weaponcore API...");
+                Wc.Activate(Me);
+                UsingWeaponcore = true;
+            }
+            catch (Exception e)
+            {
+                Echo("WeaponCore Api is failing!\nMake sure WeaponCore is enabled!");
+                Echo(e.Message);
+                Echo(e.StackTrace);
+                return false;
+            }
+
             Wc.GetAllCoreWeapons(WeaponcoreDefinitions);
 
             var tempControllers = new List<IMyShipController>();
@@ -412,7 +463,7 @@ namespace IngameScript
             if (tempControllers.Count == 0)
             {
                 Echo("Setup Failed, No ship controllers found.");
-                return;
+                return false;
             }
             Reference = tempControllers.First();
 
@@ -421,7 +472,7 @@ namespace IngameScript
             if (scriptGroup == null)
             {
                 Echo($"Setup Failed, no group named {ScriptGroupName} found.");
-                return;
+                return false;
             }
 
             var tempBlocks = new List<IMyTerminalBlock>();
@@ -456,6 +507,8 @@ namespace IngameScript
             GridTerminalSystem.GetBlocksOfType(Controllers);
 
             Echo("Setup Complete");
+            setupCompleted = true;
+            return true;
         }
 
 
@@ -511,11 +564,17 @@ namespace IngameScript
             if (targetList.Count == 0)
                 return;
 
-            EngagedTargets.Add(targetList.First().EntityId, targetList.First().TimeStamp);
-            FireMissile(ref ProtoMissiles, 5, targetList.First().EntityId);
             Firing = true;
-            return;
 
+            var missile = GetMissile();
+            if (missile == null)
+            {
+                Echo("Sentry target acquired, but there are no missiles ready to fire.");
+                return;
+            }
+
+            EngagedTargets.Add(targetList.First().EntityId, targetList.First().TimeStamp);
+            FireMissile(missile, GuidanceDelay * TicksPerSecond + 5, targetList.First().EntityId);
         }
 
 
@@ -836,8 +895,6 @@ namespace IngameScript
                 {
                     Nuke();
                 }
-
-
             }
 
 
@@ -1799,8 +1856,5 @@ namespace IngameScript
             public MyDetectedEntityInfo? GetAiFocus(long shooter, int priority = 0) => _getAiFocus?.Invoke(shooter, priority);
 
         }
-
-
-
     }
 }
