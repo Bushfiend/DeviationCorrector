@@ -79,9 +79,11 @@ namespace IngameScript
         }
 
 
+        int tick = 0;
 
         public void Main(string argument, UpdateType updateSource)
         {
+            tick += 1;
 
             UpdateMissileTargets();
             UpdateMissile(ref ActiveMissiles);
@@ -105,7 +107,7 @@ namespace IngameScript
 
             GetMissiles(ref ProtoMissiles);
 
-            if (Mode == FireMode.Sentry)
+            if (Mode == FireMode.Sentry && tick % 10 == 0)
             {
                 SentryUpdate(2000);
             }
