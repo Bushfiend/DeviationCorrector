@@ -130,11 +130,14 @@ namespace IngameScript
                 return;
             }
 
-            switch (argument)
+            var argumentParts = argument.Trim().ToLower().Split(new char[] { ' ' }, 2);
+            var command = argumentParts[0];
+            var commandArguments = argumentParts.Length > 1 && argumentParts[1].Trim().Length > 0 ? argumentParts[1].Trim() : null;
+
+            switch (command)
             {
                 case "fire":
-                    FireMissile(ref ProtoMissiles);
-                    Firing = true;
+                    FireCommand(commandArguments);
                     break;
                 case "raycast":
                     if (HasRaycast && Mode == FireMode.Raycast)
@@ -152,6 +155,18 @@ namespace IngameScript
             }
         }
 
+        void FireCommand(string nameFilter = null)
+        {
+            var missile = GetMissile(nameFilter);
+            if (missile == null)
+            {
+                Echo("There are no missiles ready to fire.");
+                return;
+            }
+            FireMissile(missile);
+            Firing = true;
+        }
+        
         MyDetectedEntityInfo? Raycast(ref List<IMyCameraBlock> cameras, float range)
         {
             MyDetectedEntityInfo? target = new MyDetectedEntityInfo?();
@@ -290,17 +305,17 @@ namespace IngameScript
 
         }
 
-        void FireMissile(ref HashSet<IMyShipMergeBlock> protoMissiles, int trackingDelay = 0, long entityId = 0)
+        IMyShipMergeBlock GetMissile(string name = null)
         {
+            return ProtoMissiles.FirstOrDefault(missile => name == null || missile.CustomName.ToLower().Contains(name));
+        }
 
-            if (protoMissiles.Count == 0)
-                return;
-
+        void FireMissile(IMyShipMergeBlock mergeBlock, int trackingDelay = 0, long entityId = 0)
+        {
             var blocks = new List<IMyTerminalBlock>();
             GridTerminalSystem.GetBlocks(blocks);
 
-
-            var missile = new DeviationCorrector(protoMissiles.Last(), blocks, Reference, $"Missile-{Rand.Next(1, 20000)}", trackingDelay);
+            var missile = new DeviationCorrector(mergeBlock, blocks, Reference, $"Missile-{Rand.Next(1, 20000)}", trackingDelay);
 
             switch (Mode)
             {
@@ -339,10 +354,11 @@ namespace IngameScript
 
             int index = Rand.Next(Quotes.Length);
             missile.HudText = Quotes[index];
+
             ActiveMissiles.Add(missile);
+            ProtoMissiles.Remove(mergeBlock);
 
-
-            protoMissiles.Remove(missile.Merge);
+            Echo("Missile launched!");
         }
 
 
@@ -525,11 +541,17 @@ namespace IngameScript
             if (targetList.Count == 0)
                 return;
 
-            EngagedTargets.Add(targetList.First().EntityId, targetList.First().TimeStamp);
-            FireMissile(ref ProtoMissiles, 5, targetList.First().EntityId);
             Firing = true;
-            return;
 
+            var missile = GetMissile();
+            if (missile == null)
+            {
+                Echo("Sentry target acquired, but there are no missiles ready to fire.");
+                return;
+            }
+
+            EngagedTargets.Add(targetList.First().EntityId, targetList.First().TimeStamp);
+            FireMissile(missile, 5, targetList.First().EntityId);
         }
 
 
