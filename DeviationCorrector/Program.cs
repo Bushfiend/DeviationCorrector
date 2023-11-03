@@ -102,38 +102,9 @@ namespace IngameScript
                 return;
             }
 
-            if (argument != string.Empty)
-            {
-
-                var argumentParts = argument.Trim().ToLower().Split(new char[] { ' ' }, 2);
-                var command = argumentParts[0];
-                var commandArguments = argumentParts.Length > 1 && argumentParts[1].Trim().Length > 0 ? argumentParts[1].Trim() : null;
-
-                switch (command)
-                {
-                    case "fire":
-                        FireCommand(commandArguments);
-                        break;
-                    case "raycast":
-                        Raycast();
-                        break;
-                    case "mode":
-                        CycleMode();
-                        break;
-                    case "reload":
-                        Reload();
-                        break;
-                    case "reassign":
-                        RedirectMissiles();
-                        break;
-                    case "detonate":
-                        DetonateMissiles();
-                        break;
-                }
-            }
-
+            HandleCommands(argument);
             UpdateMissileTargets();
-            UpdateMissile(ref ActiveMissiles);
+            UpdateMissiles(ref ActiveMissiles);
 
             if (HasRaycast)
             {
@@ -153,6 +124,38 @@ namespace IngameScript
             if (tick > 100)
                 tick = 0;
         }
+
+        void HandleCommands(string argument)
+        {
+            if (argument == string.Empty)         
+                return;                         
+            var argumentParts = argument.Trim().ToLower().Split(new char[] { ' ' }, 2);
+            var command = argumentParts[0];
+            var commandArguments = argumentParts.Length > 1 && argumentParts[1].Trim().Length > 0 ? argumentParts[1].Trim() : null;
+
+            switch (command)
+            {
+                case "fire":
+                    FireCommand(commandArguments);
+                    break;
+                case "raycast":
+                    Raycast();
+                    break;
+                case "mode":
+                    CycleMode();
+                    break;
+                case "reload":
+                    Reload();
+                    break;
+                case "reassign":
+                    RedirectMissiles();
+                    break;
+                case "detonate":
+                    DetonateMissiles();
+                    break;
+            }
+        }
+
 
 
         void Raycast()
@@ -493,7 +496,7 @@ namespace IngameScript
         }
 
 
-        void UpdateMissile(ref List<DeviationCorrector> activeMissiles)
+        void UpdateMissiles(ref List<DeviationCorrector> activeMissiles)
         {
             activeMissiles.RemoveAll(m => m.Merge.Closed);
             activeMissiles.ForEach(m => m.Update());
@@ -1196,7 +1199,7 @@ namespace IngameScript
                 float xOffset = -550f;
                 float yOffset = 350f;
 
-                for (int i = 0; i < _activeMissileCount + _missileCount; i++)
+                for (int i = 0; i < (_activeMissileCount + _missileCount); i++)
                 {
                     if (i == 20)
                         break;
