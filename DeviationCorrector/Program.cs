@@ -770,8 +770,8 @@ namespace IngameScript
                     {
                         _thrusters.Add(block as IMyThrust);
                         ((IMyThrust)block).Enabled = true;
-                        if (_missileForward == Vector3D.Zero)
-                            _missileForward = block.WorldMatrix.Backward;
+                        if (_forwardVector == Vector3D.Zero)
+                            _forwardVector = block.WorldMatrix.Backward;
                         continue;
                     }
                     if (block is IMyWarhead)
@@ -943,7 +943,7 @@ namespace IngameScript
                     return @out;
                 };
 
-                double thrusterPower = vectorProjectionScalar(_missileForward, Vector3D.Normalize(lateralAcceleration));
+                double thrusterPower = vectorProjectionScalar(_forwardVector, Vector3D.Normalize(lateralAcceleration));
 
                 thrusterPower = (Merge.CubeGrid.GridSizeEnum == MyCubeSize.Large) ? MathHelper.Clamp(thrusterPower, 0.9, 1) : thrusterPower;
 
@@ -968,12 +968,18 @@ namespace IngameScript
 
                 double Yaw; double Pitch;
 
-                CalculateGyroRotation(am, 18, 0.3, _gyros, this._lastYaw, this._lastPitch, out Pitch, out Yaw);
+                _gyros.RemoveAll(g => g.Closed);
+                try 
+                { 
+                    CalculateGyroRotation(am, 18, 0.3, _gyros, this._lastYaw, this._lastPitch, out Pitch, out Yaw);
+                    this._lastTargetPosition = TargetPosition;
+                    this._lastPosition = Position;
+                    this._lastYaw = Yaw;
+                    this._lastPitch = Pitch;
+                }
+                catch{ }
 
-                this._lastTargetPosition = TargetPosition;
-                this._lastPosition = Position;
-                this._lastYaw = Yaw;
-                this._lastPitch = Pitch;
+                
             }
 
 
@@ -982,10 +988,10 @@ namespace IngameScript
                 newPitch = 0;
                 newYaw = 0;
 
-                var missileUpVector = _thrusters.First().WorldMatrix.Up;
-                var missileForwardVector = _thrusters.First().WorldMatrix.Backward;
+                _upVector = _thrusters.First().WorldMatrix.Up;
+                _forwardVector = _thrusters.First().WorldMatrix.Backward;
 
-                Quaternion shipOrientation = Quaternion.CreateFromForwardUp(missileForwardVector, missileUpVector);
+                Quaternion shipOrientation = Quaternion.CreateFromForwardUp(_forwardVector, _upVector);
                 var inverseOrientation = Quaternion.Inverse(shipOrientation);
 
                 Vector3D transformedDirection = targetDirection;
@@ -1006,9 +1012,8 @@ namespace IngameScript
                 if (_currentRoll > Math.PI * 2)
                     _currentRoll -= Math.PI * 2;
 
-                var referenceMatrix = MatrixD.CreateWorld(_thrusters.First().GetPosition(), (Vector3)missileForwardVector, (Vector3)missileUpVector).GetOrientation();
-                var pitchYawRollVector = Vector3.Transform(new Vector3D(shipForwardElevation, shipForwardAzimuth, _currentRoll), referenceMatrix);
-
+                var referenceMatrix = MatrixD.CreateWorld(_thrusters.First().GetPosition(), (Vector3)_forwardVector, (Vector3)_upVector).GetOrientation();
+                var pitchYawRollVector = Vector3.Transform(new Vector3D(shipForwardElevation, shipForwardAzimuth, _currentRoll), referenceMatrix);               
                 foreach (var gyroscope in gyroscopes)
                 {
                     var transformedVector = Vector3.Transform(pitchYawRollVector, Matrix.Transpose(gyroscope.WorldMatrix.GetOrientation()));
@@ -1030,7 +1035,7 @@ namespace IngameScript
             private double _lastYaw = 0;
             private double _lastPitch = 0;
             private double _currentRoll = 0;
-            private double _spin = 0.1;
+            private double _spin = 0;
             private double _pngGain = 2.5;
             private double _mass = 0;
             private double _detonationDistance = 85;
@@ -1042,12 +1047,13 @@ namespace IngameScript
             private int _missileTicks = 0;
 
             private double _acceleration = 0;
+            private Vector3D _upVector = Vector3D.Zero;
             private Vector3D _currentLOS = Vector3D.Zero;
             private Vector3D _lastLOS = Vector3D.Zero;
             private Vector3D _lastTargetPosition = Vector3D.Zero;
             private Vector3D _lastPosition = Vector3D.Zero;
             private List<IMyTerminalBlock> _blockList = new List<IMyTerminalBlock>(); //To filter on launch
-            private Vector3D _missileForward = Vector3D.Zero;
+            private Vector3D _forwardVector = Vector3D.Zero;
 
             private HashSet<MyDefinitionId> _wcDefinitions = new HashSet<MyDefinitionId>();
 
