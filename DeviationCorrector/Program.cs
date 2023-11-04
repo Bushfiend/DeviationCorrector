@@ -195,7 +195,7 @@ namespace IngameScript
                     Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), target.Value.Position))}";
                     var location1 = target.Value.Position;
                     Hud.TargetLocation = $"Location: X:{Math.Round(location1.X, 2)} Y:{Math.Round(location1.Y, 2)} Z:{Math.Round(location1.Z, 2)} ";
-                    Hud.TargetSpeed = $"Speed: {target.Value.Velocity}";
+                    Hud.TargetSpeed = $"Speed: {Math.Round(target.Value.Velocity.Length(), 2)} m/s";
                     break;
 
                 case FireMode.Raycast:
@@ -224,7 +224,8 @@ namespace IngameScript
                         Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), RC.HitPosition))}";
                         var location2 = RC.HitPosition;
                         Hud.TargetLocation = $"Location: X:{Math.Round(location2.X, 2)} Y:{Math.Round(location2.Y, 2)} Z:{Math.Round(location2.Z, 2)} ";
-                        Hud.TargetSpeed = $"Speed: {RC.TargetVelocity}";
+                        Hud.TargetSpeed = $"Speed: {Math.Round(RC.TargetVelocity.Length(), 2)} m/s";
+                        // TODO: Target direction - Closing in (over 50% of speed is towards us), moving away (over 50% of speed is away), stationary (speed is zero), drifting (speed is low), moving sideways (neither moving towards us nor away)
                     }
                     break;
             }
@@ -234,8 +235,6 @@ namespace IngameScript
 
             Hud.UpdateLcds();
         }
-
-
 
         void CycleMode()
         {
