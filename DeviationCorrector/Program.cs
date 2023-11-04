@@ -28,22 +28,21 @@ namespace IngameScript
 {
     partial class Program : MyGridProgram
     {
-
-
         const string MissileTag = "PVE";
         const string ScriptGroupName = "UDR";
 
-        int GuidanceDelay = 0; // seconds that the missile will fly in a straight line after being fired
+        const int GuidanceDelay = 0; // seconds that the missile will fly in a straight line after being fired
         const int SentryRange = 2000;
-        double UpdateSpeed = 0.016;
         const int TicksPerSecond = 60;
         const string DebugLCDName = "Debug";
-        bool SetupCompleted = false;
 
         //MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/SemiAutoPistolMagazine");
         MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/FlareClip");
 
         int NukeAmmoAmount = 10000;
+
+        bool SetupCompleted = false;
+
         HashSet<MyDefinitionId> WeaponcoreDefinitions = new HashSet<MyDefinitionId>();
         Dictionary<long, long> EngagedTargets = new Dictionary<long, long>();
 
@@ -96,11 +95,6 @@ namespace IngameScript
 
             tick++;
 
-            if(Mode == FireMode.Weaponcore)
-                UpdateSpeed = 0.016;
-            if (Mode == FireMode.Raycast)
-                UpdateSpeed = RC.AutoScanInterval;
-
             if (InFireSequence)
             {
                 InFireSequence = false;
@@ -113,7 +107,7 @@ namespace IngameScript
 
             if (HasRaycast)
             {
-                RC.Update(UpdateSpeed, RaycastArray, Controllers);
+                RC.Update(1.0 / TicksPerSecond, RaycastArray, Controllers);
             }
 
             if (HasHud)
@@ -468,8 +462,6 @@ namespace IngameScript
             scriptGroup.GetBlocks(tempBlocks);
 
             var displays = tempBlocks.FindAll(b => b is IMyTextPanel);
-            var cameras = tempBlocks.FindAll(b => b is IMyCameraBlock);
-
             if (displays.Count > 0)
             {
                 HasHud = true;
@@ -482,6 +474,8 @@ namespace IngameScript
                 Hud = new HUD(d);
 
             }
+
+            var cameras = tempBlocks.FindAll(b => b is IMyCameraBlock);
             if (cameras.Count > 0)
             {
                 HasRaycast = true;
@@ -491,6 +485,20 @@ namespace IngameScript
                     ((IMyCameraBlock)block).EnableRaycast = true;
                 }
                 RC = new RaycastHoming(RaycastRange, 3, 250, Me.CubeGrid.EntityId);
+                RC.AddEntityTypeToFilter(MyDetectedEntityType.FloatingObject, MyDetectedEntityType.Planet, MyDetectedEntityType.Asteroid);
+
+                #region Ignore own grids with raycast
+                var _mechConnections = new List<IMyMechanicalConnectionBlock>();
+                GridTerminalSystem.GetBlocksOfType(_mechConnections);
+                RC.ClearIgnoredGridIDs();
+                RC.AddIgnoredGridID(Me.CubeGrid.EntityId);
+                foreach (var mc in _mechConnections)
+                {
+                    RC.AddIgnoredGridID(mc.CubeGrid.EntityId);
+                    if (mc.TopGrid != null)
+                        RC.AddIgnoredGridID(mc.TopGrid.EntityId);
+                }
+                #endregion
             }
 
             GridTerminalSystem.GetBlocksOfType(Controllers);
