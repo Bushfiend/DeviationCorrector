@@ -35,13 +35,13 @@ namespace IngameScript
 
         int GuidanceDelay = 0; // seconds that the missile will fly in a straight line after being fired
         const int SentryRange = 2000;
-        const double GameTick = 0.016;
+        double UpdateSpeed = 0.016;
         const int TicksPerSecond = 60;
         const string DebugLCDName = "Debug";
         bool SetupCompleted = false;
 
-        MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/SemiAutoPistolMagazine");
-        //MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/FlareClip");
+        //MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/SemiAutoPistolMagazine");
+        MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/FlareClip");
 
         int NukeAmmoAmount = 10000;
         HashSet<MyDefinitionId> WeaponcoreDefinitions = new HashSet<MyDefinitionId>();
@@ -96,6 +96,11 @@ namespace IngameScript
 
             tick++;
 
+            if(Mode == FireMode.Weaponcore)
+                UpdateSpeed = 0.016;
+            if (Mode == FireMode.Raycast)
+                UpdateSpeed = RC.AutoScanInterval;
+
             if (InFireSequence)
             {
                 InFireSequence = false;
@@ -108,7 +113,7 @@ namespace IngameScript
 
             if (HasRaycast)
             {
-                RC.Update(GameTick, RaycastArray, Controllers);
+                RC.Update(UpdateSpeed, RaycastArray, Controllers);
             }
 
             if (HasHud)
@@ -897,7 +902,6 @@ namespace IngameScript
 
             private void Guide()
             {
-
                 if (TargetPosition == Vector3D.Zero)
                     return;
 
@@ -923,12 +927,20 @@ namespace IngameScript
                     losRate = losDelta.Length() / GameTick;
                 }
 
-
                 double closingVelocity = (targetVelocity - missileVelocity).Length();
 
                 Vector3D GravityComp = -ExternalReference.GetNaturalGravity();
                 Vector3D LateralDirection = Vector3D.Normalize(Vector3D.Cross(Vector3D.Cross(relativeVelocity, this._currentLOS), relativeVelocity));
-                Vector3D lateralAcceleration = LateralDirection * this._pngGain * losRate * closingVelocity + losDelta * 9.8 * (0.5 * this._pngGain);
+                double losRateDerivative = (losRate - this._lastLosRate) / GameTick;
+                double dControlTerm = derivativeControlGain * losRateDerivative;
+
+                Vector3D targetAcceleration = (targetVelocity - this._lastTargetVelocity) / GameTick;
+                Vector3D missileAcceleration = (missileVelocity - this._lastMissileVelocity) / GameTick;
+                Vector3D accelerationDifference = targetAcceleration - missileAcceleration;
+
+                Vector3D accelerationCorrection = _accelerationCorrectionGain * accelerationDifference;
+
+                Vector3D lateralAcceleration = LateralDirection * (this._pngGain * losRate + dControlTerm) * closingVelocity + losDelta * 9.8 * (0.5 * this._pngGain) + accelerationCorrection;
 
                 double oversteerRequirement = (lateralAcceleration).Length() / this._acceleration;
                 if (oversteerRequirement > 0.98)
@@ -953,10 +965,8 @@ namespace IngameScript
                 thrusterPower = MathHelper.Clamp(thrusterPower, 0.4, 1);
                 foreach (var thruster in this._thrusters)
                 {
-                    if (thruster.ThrustOverride != (thruster.MaxThrust * thrusterPower))
-                    {
-                        thruster.ThrustOverride = (float)(thruster.MaxThrust * thrusterPower);
-                    }
+                    if (thruster.ThrustOverride != (thruster.MaxThrust * thrusterPower))                   
+                        thruster.ThrustOverride = (float)(thruster.MaxThrust * thrusterPower);                   
                 }
 
                 double RejectedAccel = Math.Sqrt(this._acceleration * this._acceleration - lateralAcceleration.LengthSquared());
@@ -966,23 +976,25 @@ namespace IngameScript
                 }
                 lateralAcceleration = lateralAcceleration + this._currentLOS * RejectedAccel;
 
-
                 am = Vector3D.Normalize(lateralAcceleration + GravityComp);
 
                 double Yaw; double Pitch;
 
                 _gyros.RemoveAll(g => g.Closed);
-                try 
-                { 
+                try
+                {
                     CalculateGyroRotation(am, 18, 0.3, _gyros, this._lastYaw, this._lastPitch, out Pitch, out Yaw);
                     this._lastTargetPosition = TargetPosition;
                     this._lastPosition = Position;
                     this._lastYaw = Yaw;
                     this._lastPitch = Pitch;
-                }
-                catch{ }
 
-                
+                    this._lastLosRate = losRate;
+
+                    this._lastTargetVelocity = targetVelocity;
+                    this._lastMissileVelocity = missileVelocity;
+                }
+                catch { }                     
             }
 
 
@@ -1049,6 +1061,12 @@ namespace IngameScript
             private int _trackingDelay = 0;
             private int _missileTicks = 0;
 
+            private double derivativeControlGain = 0.2;
+            private double _accelerationCorrectionGain = 0.1;
+
+            private double _lastLosRate = 0;
+            private Vector3D _lastTargetVelocity = Vector3D.Zero;
+            private Vector3D _lastMissileVelocity = Vector3D.Zero;
             private double _acceleration = 0;
             private Vector3D _upVector = Vector3D.Zero;
             private Vector3D _currentLOS = Vector3D.Zero;
@@ -1240,7 +1258,8 @@ namespace IngameScript
             private string _targetLocation = "";
             private string _targetSpeed = "";
             private string _targetDistance = "";
-
+            private float _cargoMass = 0;
+              
 
             private List<IMyTextPanel> _displays = new List<IMyTextPanel>();
         }
