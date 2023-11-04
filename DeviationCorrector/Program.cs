@@ -47,12 +47,9 @@ namespace IngameScript
         Dictionary<long, long> EngagedTargets = new Dictionary<long, long>();
 
         IMyTextPanel DebugLcd = null;
-
         WcPbApi Wc;
         bool UsingWeaponcore = false;
-
         bool HasRaycast = false;
-
         bool HasHud = false;
         bool InFireSequence = false;
 
@@ -87,7 +84,6 @@ namespace IngameScript
 
         public void Main(string argument, UpdateType updateSource)
         {
-
             if (!Setup())
             {
                 return;
@@ -107,6 +103,7 @@ namespace IngameScript
 
             if (HasRaycast)
             {
+                // TODO: Only run this every 10th tick? I think that's what WHAM does
                 RC.Update(1.0 / TicksPerSecond, RaycastArray, Controllers);
             }
 
@@ -119,9 +116,6 @@ namespace IngameScript
             {
                 SentryUpdate(SentryRange);
             }
-
-            if (tick > 100)
-                tick = 0;
         }
 
         void HandleCommands(string argument)
@@ -348,7 +342,6 @@ namespace IngameScript
 
         void UpdateMissileTargets()
         {
-
             if (Mode == FireMode.Raycast)
             {
                 if (RC.Status == RaycastHoming.TargetingStatus.Locked)
@@ -370,7 +363,6 @@ namespace IngameScript
 
             foreach (var missile in ActiveMissiles)
             {
-
                 var targetUpdated = false;
 
                 foreach (var entity in detectedEntities)
@@ -485,6 +477,7 @@ namespace IngameScript
                     ((IMyCameraBlock)block).EnableRaycast = true;
                 }
                 RC = new RaycastHoming(RaycastRange, 3, 250, Me.CubeGrid.EntityId);
+                RC.OffsetTargeting = true;
                 RC.AddEntityTypeToFilter(MyDetectedEntityType.FloatingObject, MyDetectedEntityType.Planet, MyDetectedEntityType.Asteroid);
 
                 #region Ignore own grids with raycast
@@ -708,9 +701,9 @@ namespace IngameScript
             public Vector3D TargetPosition { get; set; }
             public List<Vector3D> PathToTarget { get; set; }
             public IMyShipController ExternalReference { get; set; }
-            public float DistanceToTarget
+            public double DistanceToTarget
             {
-                get { return (float)Vector3D.Distance(Position, TargetPosition); }
+                get { return Vector3D.Distance(Position, TargetPosition); }
             }
             public Vector3D Position
             {
