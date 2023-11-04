@@ -192,7 +192,7 @@ namespace IngameScript
                         break;
 
                     Hud.TargetName = $"Name:{target.Value.Name}";
-                    Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), target.Value.Position))}";
+                    Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), target.Value.Position))}m";
                     var location1 = target.Value.Position;
                     Hud.TargetLocation = $"Location: X:{Math.Round(location1.X, 2)} Y:{Math.Round(location1.Y, 2)} Z:{Math.Round(location1.Z, 2)} ";
                     Hud.TargetSpeed = $"Speed: {Math.Round(target.Value.Velocity.Length(), 2)} m/s";
@@ -221,7 +221,7 @@ namespace IngameScript
                     else if (RC.Status == RaycastHoming.TargetingStatus.Locked)
                     {
                         Hud.TargetName = $"Target Locked:{RC.TargetId}";
-                        Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), RC.HitPosition))}";
+                        Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), RC.HitPosition))}m";
                         var location2 = RC.HitPosition;
                         Hud.TargetLocation = $"Location: X:{Math.Round(location2.X, 2)} Y:{Math.Round(location2.Y, 2)} Z:{Math.Round(location2.Z, 2)} ";
                         Hud.TargetSpeed = $"Speed: {Math.Round(RC.TargetVelocity.Length(), 2)} m/s";
@@ -578,58 +578,132 @@ namespace IngameScript
             }
         }
 
-
-        void Reload()
+        bool IsMissileBlock(IMyTerminalBlock block)
         {
+            return block.CustomName.Contains(MissileTag);
+        }
 
-            var tanks = new List<IMyGasTank>();
-            GridTerminalSystem.GetBlocksOfType(tanks, c => c.CustomName.Contains(MissileTag));
-            tanks.ForEach(c => c.Stockpile = true);
-
-
+        void ConnectConnectors()
+        {
             var connectors = new List<IMyShipConnector>();
-            GridTerminalSystem.GetBlocksOfType(connectors, c => c.CustomName.Contains(MissileTag));
-            connectors.ForEach(c => c.Connect());
-
-            var missileCargos = new List<IMyCargoContainer>();
-            GridTerminalSystem.GetBlocksOfType(missileCargos);
-            missileCargos.RemoveAll(c => !c.CustomName.Contains(MissileTag));
-
-            var shipCargos = new List<IMyCargoContainer>();
-            GridTerminalSystem.GetBlocksOfType(shipCargos);
-
-            shipCargos.RemoveAll(b => b.CustomName.Contains(MissileTag) || !b.GetInventory().ContainItems(1, NukeAmmoDef));
-
+            GridTerminalSystem.GetBlocksOfType(connectors, IsMissileBlock);
+            connectors.ForEach(connector =>
+            {
+                connector.Enabled = true;
+                connector.Connect();
+            });
+        }
+        void StockpileTanks()
+        {
+            var tanks = new List<IMyGasTank>();
+            GridTerminalSystem.GetBlocksOfType(tanks, IsMissileBlock);
+            tanks.ForEach(c =>
+            {
+                c.Enabled = true;
+                c.Stockpile = true;
+            });
+        }
+        void RechargeBatteries()
+        {
+            var batteries = new List<IMyBatteryBlock>();
+            GridTerminalSystem.GetBlocksOfType(batteries, IsMissileBlock);
+            batteries.ForEach(battery =>
+            {
+                battery.Enabled = true;
+                battery.ChargeMode = ChargeMode.Recharge;
+            });
+        }
+        void DisableThrusters()
+        {
+            var thrusters = new List<IMyThrust>();
+            GridTerminalSystem.GetBlocksOfType(thrusters, IsMissileBlock);
+            thrusters.ForEach(thruster =>
+            {
+                thruster.Enabled = false;
+            });
+        }
+        void DisableGyros()
+        {
+            var gyros = new List<IMyGyro>();
+            GridTerminalSystem.GetBlocksOfType(gyros, IsMissileBlock);
+            gyros.ForEach(gyro =>
+            {
+                gyro.Enabled = false;
+            });
+        }
+        List<IMyInventory> GetMissileInventories()
+        {
             var missileInventories = new List<IMyInventory>();
 
+            var missileCargos = new List<IMyCargoContainer>();
+            GridTerminalSystem.GetBlocksOfType(missileCargos, IsMissileBlock);
             foreach (var cargo in missileCargos)
+            {
                 missileInventories.Add(cargo.GetInventory());
+            }
+
+            // Connectors can be used as cargo as well, especially on small grids they have a nice cargo size for their space
+            // They must contain the name "Cargo" to be considered.
+            var connectors = new List<IMyShipConnector>();
+            GridTerminalSystem.GetBlocksOfType(connectors, b => IsMissileBlock(b) && b.CustomName.Contains("Cargo"));
             foreach (var connector in connectors)
             {
-                var useConnector = false;
-                bool.TryParse(connector.CustomData, out useConnector);
-                if (useConnector)
-                    missileInventories.Add(connector.GetInventory());
+                missileInventories.Add(connector.GetInventory());
             }
+
+            return missileInventories;
+        }
+        void FillCargo()
+        {
+            var shipCargos = new List<IMyCargoContainer>();
+            GridTerminalSystem.GetBlocksOfType(shipCargos, b => !IsMissileBlock(b) && b.GetInventory().ContainItems(1, NukeAmmoDef));
+
+            var missileInventories = GetMissileInventories();
 
             foreach (var shipCargo in shipCargos)
             {
-                MyFixedPoint missileItemAmount = 0;
                 foreach (var missileInventory in missileInventories)
                 {
-                    missileItemAmount = missileInventory.GetItemAmount(NukeAmmoDef);
-                    if (missileItemAmount >= NukeAmmoAmount)
+                    if (missileInventory.IsFull)
+                    {
                         continue;
-                    var transferAmount = NukeAmmoAmount - missileItemAmount;
+                    }
+                    var current = missileInventory.GetItemAmount(NukeAmmoDef);
+                    var transferAmount = NukeAmmoAmount - current;
+                    if (transferAmount <= 0)
+                    {
+                        continue;
+                    }
+
                     var shipCargoInventory = shipCargo.GetInventory();
                     var item = shipCargoInventory.FindItem(NukeAmmoDef);
                     if (item == null)
+                    {
                         break;
+                    }
 
                     shipCargoInventory.TransferItemTo(missileInventory, item.Value, transferAmount);
                 }
-
             }
+        }
+
+        void Reload()
+        {
+            Echo("Connecting connectors...");
+            ConnectConnectors();
+            Echo("Setting tanks to stockpile...");
+            StockpileTanks();
+            Echo("Setting batteries to recharge...");
+            RechargeBatteries();
+            // Disable these blocks to avoid unnecessary dampening, fuel burn, and subgrid damage
+            Echo("Disabling missile thrusters...");
+            DisableThrusters();
+            Echo("Disabling missile gyros...");
+            DisableGyros();
+            Echo("Filling missile cargo containers...");
+            FillCargo();
+
+            Echo("Reloading complete.");
         }
 
 
