@@ -48,12 +48,14 @@ namespace IngameScript
 
         IMyTextPanel DebugLcd = null;
         WcPbApi Wc;
+
         bool UsingWeaponcore = false;
         bool HasRaycast = false;
         bool HasHud = false;
         bool InFireSequence = false;
 
         IMyShipController Reference;
+
 
         RaycastHoming RC;
         HUD Hud;
@@ -64,8 +66,7 @@ namespace IngameScript
         List<IMyShipController> Controllers = new List<IMyShipController>();
         List<IMyCameraBlock> RaycastArray = new List<IMyCameraBlock>();
 
-        MyDetectedEntityInfo? RaycastTarget = new MyDetectedEntityInfo?();
-        Vector3D TargetLocation = Vector3D.Zero;
+
 
         float RaycastRange = 10000;
 
@@ -75,7 +76,7 @@ namespace IngameScript
 
         Random Rand = new Random();
 
-        int tick = 0;
+        public static long Ticks = 0;
 
         public Program()
         {
@@ -84,12 +85,18 @@ namespace IngameScript
 
         public void Main(string argument, UpdateType updateSource)
         {
+
             if (!Setup())
             {
                 return;
             }
 
             tick++;
+
+            if(Mode == FireMode.Weaponcore)
+                UpdateSpeed = 0.016;
+            if (Mode == FireMode.Raycast)
+                UpdateSpeed = RC.AutoScanInterval;
 
             if (InFireSequence)
             {
@@ -112,10 +119,13 @@ namespace IngameScript
 
             GetMissiles(ref ProtoMissiles);
 
-            if (Mode == FireMode.Sentry && tick % 10 == 0)
+            if (Mode == FireMode.Sentry && Ticks % 10 == 0)
             {
                 SentryUpdate(SentryRange);
             }
+
+            if (tick > 100)
+                tick = 0;
         }
 
         void HandleCommands(string argument)
@@ -255,15 +265,13 @@ namespace IngameScript
             long entityId = 0;
             Vector3D location = Vector3D.Zero;
 
-
             switch (Mode)
             {
                 case FireMode.Raycast:
-                    TargetLocation = (Vector3D)RaycastTarget.Value.HitPosition;
-                    if (TargetLocation == Vector3D.Zero)
+                    if (RC.Status != RaycastHoming.TargetingStatus.Locked)
                         return;
-                    entityId = RaycastTarget.Value.EntityId;
-                    location = TargetLocation;
+                    entityId = RC.TargetId;
+                    location = RC.TargetPosition;
                     break;
 
                 case FireMode.Weaponcore:
@@ -353,6 +361,7 @@ namespace IngameScript
                     {
                         missile.TargetId = RC.TargetId;
                         missile.TargetPosition = RC.TargetPosition;
+                        missile.UpdateTicks = RC.TimeSinceLastRaycast;
                     }
                     return;
                 }
@@ -760,7 +769,7 @@ namespace IngameScript
             public Vector3D TargetPosition { get; set; }
             public List<Vector3D> PathToTarget { get; set; }
             public IMyShipController ExternalReference { get; set; }
-            public double DistanceToTarget
+            public float DistanceToTarget
             {
                 get { return Vector3D.Distance(Position, TargetPosition); }
             }
@@ -884,7 +893,7 @@ namespace IngameScript
 
                 _connectors.ForEach(c => c.Disconnect());
                 _blockList.ForEach(b => _mass += b.Mass);
-
+                _mass += _cargeMass;
                 _acceleration = _acceleration / _mass;
 
 
@@ -991,8 +1000,10 @@ namespace IngameScript
 
                 Vector3D GravityComp = -ExternalReference.GetNaturalGravity();
                 Vector3D LateralDirection = Vector3D.Normalize(Vector3D.Cross(Vector3D.Cross(relativeVelocity, this._currentLOS), relativeVelocity));
+
                 double losRateDerivative = (losRate - this._lastLosRate) / GameTick;
-                double dControlTerm = derivativeControlGain * losRateDerivative;
+                double dControlTerm = _derivativeControlGain * losRateDerivative;
+
 
                 Vector3D targetAcceleration = (targetVelocity - this._lastTargetVelocity) / GameTick;
                 Vector3D missileAcceleration = (missileVelocity - this._lastMissileVelocity) / GameTick;
@@ -1025,8 +1036,10 @@ namespace IngameScript
                 thrusterPower = MathHelper.Clamp(thrusterPower, 0.4, 1);
                 foreach (var thruster in this._thrusters)
                 {
-                    if (thruster.ThrustOverride != (thruster.MaxThrust * thrusterPower))                   
-                        thruster.ThrustOverride = (float)(thruster.MaxThrust * thrusterPower);                   
+                    if (thruster.ThrustOverride != (thruster.MaxThrust * thrusterPower))
+                    {
+                        thruster.ThrustOverride = (float)(thruster.MaxThrust * thrusterPower);
+                    }
                 }
 
                 double RejectedAccel = Math.Sqrt(this._acceleration * this._acceleration - lateralAcceleration.LengthSquared());
@@ -1050,11 +1063,10 @@ namespace IngameScript
                     this._lastPitch = Pitch;
 
                     this._lastLosRate = losRate;
-
                     this._lastTargetVelocity = targetVelocity;
                     this._lastMissileVelocity = missileVelocity;
                 }
-                catch { }                     
+                catch { }
             }
 
 
@@ -1113,7 +1125,8 @@ namespace IngameScript
             private double _spin = 0;
             private double _pngGain = 2.5;
             private double _mass = 0;
-            private double _detonationDistance = 85;
+            private double _cargeMass = 5000;
+            private double _detonationDistance = 2;
 
             private int _detonationDelay = 0;
             private int _warheadCount = 0;
@@ -1121,8 +1134,10 @@ namespace IngameScript
             private int _trackingDelay = 0;
             private int _missileTicks = 0;
 
-            private double derivativeControlGain = 0.2;
-            private double _accelerationCorrectionGain = 0.1;
+            private double _derivativeControlGain = 0.01;
+            private double _accelerationCorrectionGain = 0.01;
+
+            private long _ticksSinceLastTargetUpdate = 0;
 
             private double _lastLosRate = 0;
             private Vector3D _lastTargetVelocity = Vector3D.Zero;
@@ -1135,8 +1150,6 @@ namespace IngameScript
             private Vector3D _lastPosition = Vector3D.Zero;
             private List<IMyTerminalBlock> _blockList = new List<IMyTerminalBlock>(); //To filter on launch
             private Vector3D _forwardVector = Vector3D.Zero;
-
-            private HashSet<MyDefinitionId> _wcDefinitions = new HashSet<MyDefinitionId>();
 
             private List<IMyProgrammableBlock> _programmableBlocks = new List<IMyProgrammableBlock>();
             private List<IMyShipConnector> _connectors = new List<IMyShipConnector>();
@@ -1400,6 +1413,12 @@ namespace IngameScript
             public double MaxTimeForLockBreak { get; private set; }
             public MyRelationsBetweenPlayerAndBlock TargetRelation { get; private set; }
             public MyDetectedEntityType TargetType { get; private set; }
+            public long TimeSinceLastRaycast { 
+                get
+                {
+                    return (_currentTimeStamp - _lastTimeStamp);
+                } 
+            }
 
             public enum TargetingStatus { NotLocked, Locked, TooClose };
             enum AimMode { Center, Offset, OffsetRelative };
@@ -1415,7 +1434,9 @@ namespace IngameScript
             double _timeSinceLastScan = 0;
             bool _manualLockOverride = false;
             bool _fudgeVectorSwitch = false;
-
+            long _lastTimeStamp = 0;
+            long _currentTimeStamp = 0;
+            long _ticks = 0;
             double AutoScanScaleFactor
             {
                 get
@@ -1699,6 +1720,10 @@ namespace IngameScript
 
                     MissedLastScan = false;
                     UpdateTargetStateVectors(info.Position, info.HitPosition.Value, info.Velocity);
+
+                    _lastTimeStamp = _currentTimeStamp;
+                    _currentTimeStamp = _ticks;
+
                     TargetSize = info.BoundingBox.Size.Length();
                     _targetOrientation = info.Orientation;
 
@@ -1729,6 +1754,7 @@ namespace IngameScript
             public void Update(double timeStep, List<IMyCameraBlock> cameraList, List<IMyShipController> shipControllers, IMyTerminalBlock referenceBlock = null)
             {
                 _timeSinceLastScan += timeStep;
+                _ticks++;
 
                 if (!IsScanning)
                     return;
