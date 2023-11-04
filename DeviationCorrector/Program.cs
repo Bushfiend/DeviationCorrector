@@ -28,32 +28,28 @@ namespace IngameScript
 {
     partial class Program : MyGridProgram
     {
-
-
         const string MissileTag = "PVE";
         const string ScriptGroupName = "UDR";
 
-        int GuidanceDelay = 0; // seconds that the missile will fly in a straight line after being fired
+        const int GuidanceDelay = 0; // seconds that the missile will fly in a straight line after being fired
         const int SentryRange = 2000;
-        double UpdateSpeed = 0.016;
         const int TicksPerSecond = 60;
         const string DebugLCDName = "Debug";
-        bool SetupCompleted = false;
 
         //MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/SemiAutoPistolMagazine");
         MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/FlareClip");
 
         int NukeAmmoAmount = 10000;
+
+        bool SetupCompleted = false;
+
         HashSet<MyDefinitionId> WeaponcoreDefinitions = new HashSet<MyDefinitionId>();
         Dictionary<long, long> EngagedTargets = new Dictionary<long, long>();
 
         IMyTextPanel DebugLcd = null;
-
         WcPbApi Wc;
         bool UsingWeaponcore = false;
-
         bool HasRaycast = false;
-
         bool HasHud = false;
         bool InFireSequence = false;
 
@@ -88,18 +84,12 @@ namespace IngameScript
 
         public void Main(string argument, UpdateType updateSource)
         {
-
             if (!Setup())
             {
                 return;
             }
 
             tick++;
-
-            if(Mode == FireMode.Weaponcore)
-                UpdateSpeed = 0.016;
-            if (Mode == FireMode.Raycast)
-                UpdateSpeed = RC.AutoScanInterval;
 
             if (InFireSequence)
             {
@@ -113,7 +103,8 @@ namespace IngameScript
 
             if (HasRaycast)
             {
-                RC.Update(UpdateSpeed, RaycastArray, Controllers);
+                // TODO: Only run this every 10th tick? I think that's what WHAM does
+                RC.Update(1.0 / TicksPerSecond, RaycastArray, Controllers);
             }
 
             if (HasHud)
@@ -125,9 +116,6 @@ namespace IngameScript
             {
                 SentryUpdate(SentryRange);
             }
-
-            if (tick > 100)
-                tick = 0;
         }
 
         void HandleCommands(string argument)
@@ -207,7 +195,7 @@ namespace IngameScript
                     Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), target.Value.Position))}";
                     var location1 = target.Value.Position;
                     Hud.TargetLocation = $"Location: X:{Math.Round(location1.X, 2)} Y:{Math.Round(location1.Y, 2)} Z:{Math.Round(location1.Z, 2)} ";
-                    Hud.TargetSpeed = $"Speed: {target.Value.Velocity}";
+                    Hud.TargetSpeed = $"Speed: {Math.Round(target.Value.Velocity.Length(), 2)} m/s";
                     break;
 
                 case FireMode.Raycast:
@@ -236,7 +224,8 @@ namespace IngameScript
                         Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), RC.HitPosition))}";
                         var location2 = RC.HitPosition;
                         Hud.TargetLocation = $"Location: X:{Math.Round(location2.X, 2)} Y:{Math.Round(location2.Y, 2)} Z:{Math.Round(location2.Z, 2)} ";
-                        Hud.TargetSpeed = $"Speed: {RC.TargetVelocity}";
+                        Hud.TargetSpeed = $"Speed: {Math.Round(RC.TargetVelocity.Length(), 2)} m/s";
+                        // TODO: Target direction - Closing in (over 50% of speed is towards us), moving away (over 50% of speed is away), stationary (speed is zero), drifting (speed is low), moving sideways (neither moving towards us nor away)
                     }
                     break;
             }
@@ -246,8 +235,6 @@ namespace IngameScript
 
             Hud.UpdateLcds();
         }
-
-
 
         void CycleMode()
         {
@@ -358,7 +345,6 @@ namespace IngameScript
 
         void UpdateMissileTargets()
         {
-
             if (Mode == FireMode.Raycast)
             {
                 if (RC.Status == RaycastHoming.TargetingStatus.Locked)
@@ -380,7 +366,6 @@ namespace IngameScript
 
             foreach (var missile in ActiveMissiles)
             {
-
                 var targetUpdated = false;
 
                 foreach (var entity in detectedEntities)
@@ -472,8 +457,6 @@ namespace IngameScript
             scriptGroup.GetBlocks(tempBlocks);
 
             var displays = tempBlocks.FindAll(b => b is IMyTextPanel);
-            var cameras = tempBlocks.FindAll(b => b is IMyCameraBlock);
-
             if (displays.Count > 0)
             {
                 HasHud = true;
@@ -486,6 +469,8 @@ namespace IngameScript
                 Hud = new HUD(d);
 
             }
+
+            var cameras = tempBlocks.FindAll(b => b is IMyCameraBlock);
             if (cameras.Count > 0)
             {
                 HasRaycast = true;
@@ -495,6 +480,21 @@ namespace IngameScript
                     ((IMyCameraBlock)block).EnableRaycast = true;
                 }
                 RC = new RaycastHoming(RaycastRange, 3, 250, Me.CubeGrid.EntityId);
+                RC.OffsetTargeting = true;
+                RC.AddEntityTypeToFilter(MyDetectedEntityType.FloatingObject, MyDetectedEntityType.Planet, MyDetectedEntityType.Asteroid);
+
+                #region Ignore own grids with raycast
+                var _mechConnections = new List<IMyMechanicalConnectionBlock>();
+                GridTerminalSystem.GetBlocksOfType(_mechConnections);
+                RC.ClearIgnoredGridIDs();
+                RC.AddIgnoredGridID(Me.CubeGrid.EntityId);
+                foreach (var mc in _mechConnections)
+                {
+                    RC.AddIgnoredGridID(mc.CubeGrid.EntityId);
+                    if (mc.TopGrid != null)
+                        RC.AddIgnoredGridID(mc.TopGrid.EntityId);
+                }
+                #endregion
             }
 
             GridTerminalSystem.GetBlocksOfType(Controllers);
@@ -686,9 +686,9 @@ namespace IngameScript
             public Vector3D TargetPosition { get; set; }
             public List<Vector3D> PathToTarget { get; set; }
             public IMyShipController ExternalReference { get; set; }
-            public float DistanceToTarget
+            public double DistanceToTarget
             {
-                get { return (float)Vector3D.Distance(Position, TargetPosition); }
+                get { return Vector3D.Distance(Position, TargetPosition); }
             }
             public Vector3D Position
             {
