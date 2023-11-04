@@ -204,7 +204,7 @@ namespace IngameScript
                         break;
 
                     Hud.TargetName = $"Name:{target.Value.Name}";
-                    Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), target.Value.Position))}";
+                    Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), target.Value.Position))}m";
                     var location1 = target.Value.Position;
                     Hud.TargetLocation = $"Location: X:{Math.Round(location1.X, 2)} Y:{Math.Round(location1.Y, 2)} Z:{Math.Round(location1.Z, 2)} ";
                     Hud.TargetSpeed = $"Speed: {target.Value.Velocity}";
@@ -233,7 +233,7 @@ namespace IngameScript
                     else if (RC.Status == RaycastHoming.TargetingStatus.Locked)
                     {
                         Hud.TargetName = $"Target Locked:{RC.TargetId}";
-                        Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), RC.HitPosition))}";
+                        Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), RC.HitPosition))}m";
                         var location2 = RC.HitPosition;
                         Hud.TargetLocation = $"Location: X:{Math.Round(location2.X, 2)} Y:{Math.Round(location2.Y, 2)} Z:{Math.Round(location2.Z, 2)} ";
                         Hud.TargetSpeed = $"Speed: {RC.TargetVelocity}";
