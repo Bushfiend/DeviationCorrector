@@ -28,28 +28,37 @@ namespace IngameScript
 {
     partial class Program : MyGridProgram
     {
+
+
+
         const string MissileTag = "PVE";
         const string ScriptGroupName = "UDR";
 
-        const double GameTick = 0.016;
+        const int GuidanceDelay = 0; // seconds that the missile will fly in a straight line after being fired
+        const int SentryRange = 2000;
+        const int TicksPerSecond = 60;
+        const string DebugLCDName = "Debug";
 
         //MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/SemiAutoPistolMagazine");
         MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/FlareClip");
 
         int NukeAmmoAmount = 10000;
+
+        bool SetupCompleted = false;
+
         HashSet<MyDefinitionId> WeaponcoreDefinitions = new HashSet<MyDefinitionId>();
         Dictionary<long, long> EngagedTargets = new Dictionary<long, long>();
 
-        IMyShipMergeBlock CurrentMissile = null;
-
+        IMyTextPanel DebugLcd = null;
         WcPbApi Wc;
-        bool UsingWeaponcore = false;
 
+        bool UsingWeaponcore = false;
         bool HasRaycast = false;
         bool HasHud = false;
-        bool Firing = false;
+        bool InFireSequence = false;
 
         IMyShipController Reference;
+
 
         RaycastHoming RC;
         HUD Hud;
@@ -60,71 +69,73 @@ namespace IngameScript
         List<IMyShipController> Controllers = new List<IMyShipController>();
         List<IMyCameraBlock> RaycastArray = new List<IMyCameraBlock>();
 
-        MyDetectedEntityInfo? RaycastTarget = new MyDetectedEntityInfo?();
-        Vector3D TargetLocation = Vector3D.Zero;
-        Vector3D GpsLocation = Vector3D.Zero;
+
 
         float RaycastRange = 10000;
 
         FireMode Mode = FireMode.Weaponcore;
 
+        enum FireMode { Weaponcore, Raycast, Sentry }
+
         Random Rand = new Random();
 
-
+        public static long Ticks = 0;
 
         public Program()
         {
             Runtime.UpdateFrequency = UpdateFrequency.Update1;
-            Setup();
         }
-
-
 
         public void Main(string argument, UpdateType updateSource)
         {
 
+            if (!Setup())
+            {
+                return;
+            }
+
+            if (InFireSequence)
+            {
+                InFireSequence = false;
+                return;
+            }
+
+            HandleCommands(argument);
             UpdateMissileTargets();
-            UpdateMissile(ref ActiveMissiles);
+            UpdateMissiles(ref ActiveMissiles);
 
             if (HasRaycast)
             {
-                RC.Update(GameTick, RaycastArray, Controllers);
+                // TODO: Only run this every 10th tick? I think that's what WHAM does
+                RC.Update(1.0 / TicksPerSecond, RaycastArray, Controllers);
             }
-
 
             if (HasHud)
                 DisplayInfo();
 
-            if (Mode == FireMode.GPS && Me.CustomData != string.Empty)
-            {
-                if (ParseVector3DFromGPS(Me.CustomData, out GpsLocation))
-                {
-                    Me.CustomData = string.Empty;
-                }
-            }
-
             GetMissiles(ref ProtoMissiles);
 
-            if (Firing)
+            if (Mode == FireMode.Sentry && Ticks % 10 == 0)
             {
-                Firing = false;
-                return;
+                SentryUpdate(SentryRange);
             }
+        }
 
-            if (Mode == FireMode.Sentry)
-            {
-                SentryUpdate(2000);
-            }
+        void HandleCommands(string argument)
+        {
+            if (argument == string.Empty)         
+                return;                         
+            var argumentParts = argument.Trim().ToLower().Split(new char[] { ' ' }, 2);
+            var command = argumentParts[0];
+            var commandArguments = argumentParts.Length > 1 && argumentParts[1].Trim().Length > 0 ? argumentParts[1].Trim() : null;
 
-            switch (argument)
+            switch (command)
             {
                 case "fire":
-                    FireMissile(ref ProtoMissiles);
-                    Firing = true;
+                    FireCommand(commandArguments);
                     break;
                 case "raycast":
-                    if (HasRaycast && Mode == FireMode.Raycast)
-                        RC.LockOn();
+                    Raycast();
                     break;
                 case "mode":
                     CycleMode();
@@ -135,24 +146,37 @@ namespace IngameScript
                 case "reassign":
                     RedirectMissiles();
                     break;
+                case "detonate":
+                    DetonateMissiles();
+                    break;
             }
         }
 
-        MyDetectedEntityInfo? Raycast(ref List<IMyCameraBlock> cameras, float range)
+
+
+        void Raycast()
         {
-            MyDetectedEntityInfo? target = new MyDetectedEntityInfo?();
+            if (!HasRaycast)
+                return;
 
-            cameras.RemoveAll(c => c.Closed || c == null);
+            Mode = FireMode.Raycast;
+            if (RC.IsScanning || RC.Status == RaycastHoming.TargetingStatus.Locked)
+                RC.ClearLock();
+            else
+                RC.LockOn();
+        }
 
-            foreach (var camera in cameras)
+        void FireCommand(string nameFilter = null)
+        {
+            var missile = GetMissile(nameFilter);
+            if (missile == null)
             {
-                if (!camera.CanScan(range))
-                    continue;
-
-                target = camera.Raycast(range);
-                break;
+                Echo("There are no missiles ready to fire.");
+                return;
             }
-            return target;
+
+            FireMissile(missile, GuidanceDelay * TicksPerSecond);
+            InFireSequence = true;
         }
 
         string[] Ani = { ".", "..", "...", "..." };
@@ -171,10 +195,10 @@ namespace IngameScript
                         break;
 
                     Hud.TargetName = $"Name:{target.Value.Name}";
-                    Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), target.Value.Position))}";
+                    Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), target.Value.Position))}m";
                     var location1 = target.Value.Position;
                     Hud.TargetLocation = $"Location: X:{Math.Round(location1.X, 2)} Y:{Math.Round(location1.Y, 2)} Z:{Math.Round(location1.Z, 2)} ";
-                    Hud.TargetSpeed = $"Speed: {target.Value.Velocity}";
+                    Hud.TargetSpeed = $"Speed: {Math.Round(target.Value.Velocity.Length(), 2)} m/s";
                     break;
 
                 case FireMode.Raycast:
@@ -200,27 +224,12 @@ namespace IngameScript
                     else if (RC.Status == RaycastHoming.TargetingStatus.Locked)
                     {
                         Hud.TargetName = $"Target Locked:{RC.TargetId}";
-                        Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), RC.HitPosition))}";
+                        Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), RC.HitPosition))}m";
                         var location2 = RC.HitPosition;
                         Hud.TargetLocation = $"Location: X:{Math.Round(location2.X, 2)} Y:{Math.Round(location2.Y, 2)} Z:{Math.Round(location2.Z, 2)} ";
-                        Hud.TargetSpeed = $"Speed: {RC.TargetVelocity}";
+                        Hud.TargetSpeed = $"Speed: {Math.Round(RC.TargetVelocity.Length(), 2)} m/s";
+                        // TODO: Target direction - Closing in (over 50% of speed is towards us), moving away (over 50% of speed is away), stationary (speed is zero), drifting (speed is low), moving sideways (neither moving towards us nor away)
                     }
-                    break;
-
-                case FireMode.GPS:
-                    if (GpsLocation == Vector3D.Zero)
-                    {
-                        Hud.TargetName = "Paste Gps in PB Customdata.";
-                        Hud.TargetDistance = string.Empty;
-                        Hud.TargetLocation = string.Empty;
-                        Hud.TargetSpeed = string.Empty;
-                        break;
-                    }
-                    var location = GpsLocation;
-                    Hud.TargetName = $"Position: X:{Math.Round(location.X, 2)} Y:{Math.Round(location.Y, 2)} Z:{Math.Round(location.Z, 2)} ";
-                    Hud.TargetSpeed = string.Empty;
-                    Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), GpsLocation))}";
-                    Hud.TargetLocation = string.Empty;
                     break;
             }
 
@@ -230,12 +239,18 @@ namespace IngameScript
             Hud.UpdateLcds();
         }
 
-
-
         void CycleMode()
         {
             int enumLength = Enum.GetNames(typeof(FireMode)).Length;
             Mode = (FireMode)(((int)Mode + 1) % enumLength);
+        }
+
+        void DetonateMissiles()
+        {
+            foreach (var missile in ActiveMissiles)
+            {
+                missile.NukeOverride = true;
+            }
         }
 
         void RedirectMissiles()
@@ -243,15 +258,13 @@ namespace IngameScript
             long entityId = 0;
             Vector3D location = Vector3D.Zero;
 
-
             switch (Mode)
             {
                 case FireMode.Raycast:
-                    TargetLocation = (Vector3D)RaycastTarget.Value.HitPosition;
-                    if (TargetLocation == Vector3D.Zero)
+                    if (RC.Status != RaycastHoming.TargetingStatus.Locked)
                         return;
-                    entityId = RaycastTarget.Value.EntityId;
-                    location = TargetLocation;
+                    entityId = RC.TargetId;
+                    location = RC.TargetPosition;
                     break;
 
                 case FireMode.Weaponcore:
@@ -276,42 +289,41 @@ namespace IngameScript
 
         }
 
-        void FireMissile(ref HashSet<IMyShipMergeBlock> protoMissiles, int trackingDelay = 0, long entityId = 0)
+        IMyShipMergeBlock GetMissile(string name = null)
         {
+            return ProtoMissiles.FirstOrDefault(missile => name == null || missile.CustomName.ToLower().Contains(name));
+        }
 
-            if (protoMissiles.Count == 0)
-                return;
+        void FireMissile(IMyShipMergeBlock mergeBlock, int trackingDelay = 0, long entityId = 0)
+        {
+            if (ActiveMissiles.Exists(m => m.Merge == mergeBlock))
+            {
+                throw new Exception("Attempted to fire a missile that was already fired.");
+            }
 
             var blocks = new List<IMyTerminalBlock>();
             GridTerminalSystem.GetBlocks(blocks);
 
-
-            var missile = new DeviationCorrector(protoMissiles.Last(), blocks, Reference, $"Missile-{Rand.Next(1, 20000)}", trackingDelay);
+            var missile = new DeviationCorrector(mergeBlock, blocks, Reference, $"Missile-{Rand.Next(1, 20000)}", trackingDelay);
 
             switch (Mode)
             {
                 case FireMode.Weaponcore:
-                    if (UsingWeaponcore)
-                    {
-                        var target = Wc.GetAiFocus(Me.CubeGrid.EntityId);
-                        if (target.Value.EntityId == 0)
-                            return;
-                        missile.TargetId = target.Value.EntityId;
-                        missile.FireMissile(target.Value.Position);
-                    }
+                    if (!UsingWeaponcore)
+                        return;
+                    var target = Wc.GetAiFocus(Me.CubeGrid.EntityId);
+                    if (target.Value.EntityId == 0)
+                        return;
+                    missile.TargetId = target.Value.EntityId;
+                    missile.FireMissile(target.Value.Position);
                     break;
 
                 case FireMode.Raycast:
-                    if (HasRaycast && RC.Status != RaycastHoming.TargetingStatus.Locked)
+                    if (!HasRaycast || RC.Status != RaycastHoming.TargetingStatus.Locked)
                         return;
 
                     missile.TargetId = RC.TargetId;
                     missile.FireMissile(RC.TargetPosition);
-                    break;
-
-                case FireMode.GPS:
-                    if (GpsLocation != Vector3D.Zero)
-                        missile.FireMissile(GpsLocation);
                     break;
                 case FireMode.Sentry:
                     if (entityId == 0)
@@ -320,21 +332,20 @@ namespace IngameScript
                     missile.FireMissile(Vector3D.Zero);
                     missile.TargetId = entityId;
                     break;
-
             }
 
             int index = Rand.Next(Quotes.Length);
             missile.HudText = Quotes[index];
+
             ActiveMissiles.Add(missile);
+            ProtoMissiles.Remove(mergeBlock);
 
-
-            protoMissiles.Remove(missile.Merge);
+            Echo("Missile launched!");
         }
 
 
         void UpdateMissileTargets()
         {
-
             if (Mode == FireMode.Raycast)
             {
                 if (RC.Status == RaycastHoming.TargetingStatus.Locked)
@@ -356,7 +367,6 @@ namespace IngameScript
 
             foreach (var missile in ActiveMissiles)
             {
-
                 var targetUpdated = false;
 
                 foreach (var entity in detectedEntities)
@@ -395,16 +405,36 @@ namespace IngameScript
             }
         }
 
-        void Setup()
+
+
+        bool Setup()
         {
-            Wc = new WcPbApi();
-            if (!Wc.Activate(Me))
+            if (SetupCompleted)
+                return true;
+
+            DebugLcd = GridTerminalSystem.GetBlockWithName(DebugLCDName) as IMyTextPanel;
+            if (DebugLcd != null)
             {
-                Echo("Weaponcore Failed to initialize.");
-                return;
+                DebugLcd.ContentType = ContentType.TEXT_AND_IMAGE;
+                Echo += s => DebugLcd.WriteText(s);
             }
 
-            UsingWeaponcore = true;
+
+            Wc = new WcPbApi();
+            try
+            {
+                Echo("Activating Weaponcore API...");
+                Wc.Activate(Me);
+                UsingWeaponcore = true;
+            }
+            catch (Exception e)
+            {
+                Echo("WeaponCore Api is failing!\nMake sure WeaponCore is enabled!");
+                Echo(e.Message);
+                Echo(e.StackTrace);
+                return false;
+            }
+
             Wc.GetAllCoreWeapons(WeaponcoreDefinitions);
 
             var tempControllers = new List<IMyShipController>();
@@ -412,7 +442,7 @@ namespace IngameScript
             if (tempControllers.Count == 0)
             {
                 Echo("Setup Failed, No ship controllers found.");
-                return;
+                return false;
             }
             Reference = tempControllers.First();
 
@@ -421,15 +451,13 @@ namespace IngameScript
             if (scriptGroup == null)
             {
                 Echo($"Setup Failed, no group named {ScriptGroupName} found.");
-                return;
+                return false;
             }
 
             var tempBlocks = new List<IMyTerminalBlock>();
             scriptGroup.GetBlocks(tempBlocks);
 
             var displays = tempBlocks.FindAll(b => b is IMyTextPanel);
-            var cameras = tempBlocks.FindAll(b => b is IMyCameraBlock);
-
             if (displays.Count > 0)
             {
                 HasHud = true;
@@ -442,6 +470,8 @@ namespace IngameScript
                 Hud = new HUD(d);
 
             }
+
+            var cameras = tempBlocks.FindAll(b => b is IMyCameraBlock);
             if (cameras.Count > 0)
             {
                 HasRaycast = true;
@@ -450,39 +480,37 @@ namespace IngameScript
                     RaycastArray.Add(block as IMyCameraBlock);
                     ((IMyCameraBlock)block).EnableRaycast = true;
                 }
-                RC = new RaycastHoming(RaycastRange);
+                RC = new RaycastHoming(RaycastRange, 3, 250, Me.CubeGrid.EntityId);
+                RC.OffsetTargeting = true;
+                RC.AddEntityTypeToFilter(MyDetectedEntityType.FloatingObject, MyDetectedEntityType.Planet, MyDetectedEntityType.Asteroid);
+
+                var _mechConnections = new List<IMyMechanicalConnectionBlock>();
+                GridTerminalSystem.GetBlocksOfType(_mechConnections);
+                RC.ClearIgnoredGridIDs();
+                RC.AddIgnoredGridID(Me.CubeGrid.EntityId);
+                foreach (var mc in _mechConnections)
+                {
+                    RC.AddIgnoredGridID(mc.CubeGrid.EntityId);
+                    if (mc.TopGrid != null)
+                        RC.AddIgnoredGridID(mc.TopGrid.EntityId);
+                }
             }
 
             GridTerminalSystem.GetBlocksOfType(Controllers);
 
             Echo("Setup Complete");
+            SetupCompleted = true;
+            return true;
         }
 
 
-        void UpdateMissile(ref List<DeviationCorrector> activeMissiles)
+        void UpdateMissiles(ref List<DeviationCorrector> activeMissiles)
         {
             activeMissiles.RemoveAll(m => m.Merge.Closed);
             activeMissiles.ForEach(m => m.Update());
         }
 
-        bool ParseVector3DFromGPS(string gps, out Vector3D vec)
-        {
-            vec = Vector3D.Zero;
-            if (!gps.StartsWith("GPS:"))
-            {
-                return false;
-            }
-            string[] segments = gps.Split(':');
-            if (segments.Length < 6)
-            {
-                return false;
-            }
-            if (!double.TryParse(segments[2], out vec.X) || !double.TryParse(segments[3], out vec.Y) || !double.TryParse(segments[4], out vec.Z))
-            {
-                return false;
-            }
-            return true;
-        }
+
 
         Dictionary<MyDetectedEntityInfo, float> potentialTargets = new Dictionary<MyDetectedEntityInfo, float>();
         void SentryUpdate(float range = 2000, float threatLevel = 0)
@@ -511,18 +539,23 @@ namespace IngameScript
             if (targetList.Count == 0)
                 return;
 
-            EngagedTargets.Add(targetList.First().EntityId, targetList.First().TimeStamp);
-            FireMissile(ref ProtoMissiles, 5, targetList.First().EntityId);
-            Firing = true;
-            return;
+            InFireSequence = true;
 
+            var missile = GetMissile();
+            if (missile == null)
+            {
+                Echo("Sentry target acquired, but there are no missiles ready to fire.");
+                return;
+            }
+
+            EngagedTargets.Add(targetList.First().EntityId, targetList.First().TimeStamp);
+            FireMissile(missile, GuidanceDelay * TicksPerSecond + 5, targetList.First().EntityId);
         }
 
 
 
         void GetMissiles(ref HashSet<IMyShipMergeBlock> missiles)
         {
-
             var mergeBlocks = new List<IMyShipMergeBlock>();
             GridTerminalSystem.GetBlocksOfType(mergeBlocks);
             missiles.RemoveWhere(b => b.Closed || b == null);
@@ -537,62 +570,139 @@ namespace IngameScript
                 if (!block.CustomName.Contains(MissileTag))
                     continue;
 
+                if (ActiveMissiles.Exists(active => active.Merge == block))
+                    continue;
+
                 missiles.Add(block);
             }
         }
 
-
-        void Reload()
+        bool IsMissileBlock(IMyTerminalBlock block)
         {
+            return block.CustomName.Contains(MissileTag);
+        }
 
-            var tanks = new List<IMyGasTank>();
-            GridTerminalSystem.GetBlocksOfType(tanks, c => c.CustomName.Contains(MissileTag));
-            tanks.ForEach(c => c.Stockpile = true);
-
-
+        void ConnectConnectors()
+        {
             var connectors = new List<IMyShipConnector>();
-            GridTerminalSystem.GetBlocksOfType(connectors, c => c.CustomName.Contains(MissileTag));
-            connectors.ForEach(c => c.Connect());
-
-            var missileCargos = new List<IMyCargoContainer>();
-            GridTerminalSystem.GetBlocksOfType(missileCargos);
-            missileCargos.RemoveAll(c => !c.CustomName.Contains(MissileTag));
-
-            var shipCargos = new List<IMyCargoContainer>();
-            GridTerminalSystem.GetBlocksOfType(shipCargos);
-
-            shipCargos.RemoveAll(b => b.CustomName.Contains(MissileTag) || !b.GetInventory().ContainItems(1, NukeAmmoDef));
-
+            GridTerminalSystem.GetBlocksOfType(connectors, IsMissileBlock);
+            connectors.ForEach(connector =>
+            {
+                connector.Enabled = true;
+                connector.Connect();
+            });
+        }
+        void StockpileTanks()
+        {
+            var tanks = new List<IMyGasTank>();
+            GridTerminalSystem.GetBlocksOfType(tanks, IsMissileBlock);
+            tanks.ForEach(c =>
+            {
+                c.Enabled = true;
+                c.Stockpile = true;
+            });
+        }
+        void RechargeBatteries()
+        {
+            var batteries = new List<IMyBatteryBlock>();
+            GridTerminalSystem.GetBlocksOfType(batteries, IsMissileBlock);
+            batteries.ForEach(battery =>
+            {
+                battery.Enabled = true;
+                battery.ChargeMode = ChargeMode.Recharge;
+            });
+        }
+        void DisableThrusters()
+        {
+            var thrusters = new List<IMyThrust>();
+            GridTerminalSystem.GetBlocksOfType(thrusters, IsMissileBlock);
+            thrusters.ForEach(thruster =>
+            {
+                thruster.Enabled = false;
+            });
+        }
+        void DisableGyros()
+        {
+            var gyros = new List<IMyGyro>();
+            GridTerminalSystem.GetBlocksOfType(gyros, IsMissileBlock);
+            gyros.ForEach(gyro =>
+            {
+                gyro.Enabled = false;
+            });
+        }
+        List<IMyInventory> GetMissileInventories()
+        {
             var missileInventories = new List<IMyInventory>();
 
+            var missileCargos = new List<IMyCargoContainer>();
+            GridTerminalSystem.GetBlocksOfType(missileCargos, IsMissileBlock);
             foreach (var cargo in missileCargos)
+            {
                 missileInventories.Add(cargo.GetInventory());
+            }
+
+            // Connectors can be used as cargo as well, especially on small grids they have a nice cargo size for their space
+            // They must contain the name "Cargo" to be considered.
+            var connectors = new List<IMyShipConnector>();
+            GridTerminalSystem.GetBlocksOfType(connectors, b => IsMissileBlock(b) && b.CustomName.Contains("Cargo"));
             foreach (var connector in connectors)
             {
-                var useConnector = false;
-                bool.TryParse(connector.CustomData, out useConnector);
-                if (useConnector)
-                    missileInventories.Add(connector.GetInventory());
+                missileInventories.Add(connector.GetInventory());
             }
+
+            return missileInventories;
+        }
+        void FillCargo()
+        {
+            var shipCargos = new List<IMyCargoContainer>();
+            GridTerminalSystem.GetBlocksOfType(shipCargos, b => !IsMissileBlock(b) && b.GetInventory().ContainItems(1, NukeAmmoDef));
+
+            var missileInventories = GetMissileInventories();
 
             foreach (var shipCargo in shipCargos)
             {
-                MyFixedPoint missileItemAmount = 0;
                 foreach (var missileInventory in missileInventories)
                 {
-                    missileItemAmount = missileInventory.GetItemAmount(NukeAmmoDef);
-                    if (missileItemAmount >= NukeAmmoAmount)
+                    if (missileInventory.IsFull)
+                    {
                         continue;
-                    var transferAmount = NukeAmmoAmount - missileItemAmount;
+                    }
+                    var current = missileInventory.GetItemAmount(NukeAmmoDef);
+                    var transferAmount = NukeAmmoAmount - current;
+                    if (transferAmount <= 0)
+                    {
+                        continue;
+                    }
+
                     var shipCargoInventory = shipCargo.GetInventory();
                     var item = shipCargoInventory.FindItem(NukeAmmoDef);
                     if (item == null)
+                    {
                         break;
+                    }
 
                     shipCargoInventory.TransferItemTo(missileInventory, item.Value, transferAmount);
                 }
-
             }
+        }
+
+        void Reload()
+        {
+            Echo("Connecting connectors...");
+            ConnectConnectors();
+            Echo("Setting tanks to stockpile...");
+            StockpileTanks();
+            Echo("Setting batteries to recharge...");
+            RechargeBatteries();
+            // Disable these blocks to avoid unnecessary dampening, fuel burn, and subgrid damage
+            Echo("Disabling missile thrusters...");
+            DisableThrusters();
+            Echo("Disabling missile gyros...");
+            DisableGyros();
+            Echo("Filling missile cargo containers...");
+            FillCargo();
+
+            Echo("Reloading complete.");
         }
 
 
@@ -634,6 +744,10 @@ namespace IngameScript
             public List<IMyProgrammableBlock> ProgrammableBlocks
             {
                 get { return _programmableBlocks; }
+            }
+            public bool NukeOverride
+            {
+                set { _nukeOverride = value; }
             }
 
             public List<IMyTerminalBlock> Debug
@@ -723,8 +837,8 @@ namespace IngameScript
                     {
                         _thrusters.Add(block as IMyThrust);
                         ((IMyThrust)block).Enabled = true;
-                        if (_missileForward == Vector3D.Zero)
-                            _missileForward = block.WorldMatrix.Backward;
+                        if (_forwardVector == Vector3D.Zero)
+                            _forwardVector = block.WorldMatrix.Backward;
                         continue;
                     }
                     if (block is IMyWarhead)
@@ -769,7 +883,7 @@ namespace IngameScript
 
                 _connectors.ForEach(c => c.Disconnect());
                 _blockList.ForEach(b => _mass += b.Mass);
-
+                _mass += _cargeMass;
                 _acceleration = _acceleration / _mass;
 
 
@@ -810,7 +924,7 @@ namespace IngameScript
 
             private void Nuke()
             {
-                if (Vector3D.Distance(ExternalReference.GetPosition(), Position) < 250)
+                if (Vector3D.Distance(ExternalReference.GetPosition(), Position) < 150)
                     return;
 
                 if (_warheads.Count < 2)
@@ -832,12 +946,10 @@ namespace IngameScript
 
             private void RangeCheck()
             {
-                if (this.DistanceToTarget <= _detonationDistance)
+                if (this.DistanceToTarget <= this._detonationDistance || this._nukeOverride)
                 {
                     Nuke();
                 }
-
-
             }
 
 
@@ -849,7 +961,6 @@ namespace IngameScript
 
             private void Guide()
             {
-
                 if (TargetPosition == Vector3D.Zero)
                     return;
 
@@ -875,12 +986,22 @@ namespace IngameScript
                     losRate = losDelta.Length() / GameTick;
                 }
 
-
                 double closingVelocity = (targetVelocity - missileVelocity).Length();
 
                 Vector3D GravityComp = -ExternalReference.GetNaturalGravity();
                 Vector3D LateralDirection = Vector3D.Normalize(Vector3D.Cross(Vector3D.Cross(relativeVelocity, this._currentLOS), relativeVelocity));
-                Vector3D lateralAcceleration = LateralDirection * this._pngGain * losRate * closingVelocity + losDelta * 9.8 * (0.5 * this._pngGain);
+
+                double losRateDerivative = (losRate - this._lastLosRate) / GameTick;
+                double dControlTerm = _derivativeControlGain * losRateDerivative;
+
+
+                Vector3D targetAcceleration = (targetVelocity - this._lastTargetVelocity) / GameTick;
+                Vector3D missileAcceleration = (missileVelocity - this._lastMissileVelocity) / GameTick;
+                Vector3D accelerationDifference = targetAcceleration - missileAcceleration;
+
+                Vector3D accelerationCorrection = _accelerationCorrectionGain * accelerationDifference;
+
+                Vector3D lateralAcceleration = LateralDirection * (this._pngGain * losRate + dControlTerm) * closingVelocity + losDelta * 9.8 * (0.5 * this._pngGain) + accelerationCorrection;
 
                 double oversteerRequirement = (lateralAcceleration).Length() / this._acceleration;
                 if (oversteerRequirement > 0.98)
@@ -898,7 +1019,7 @@ namespace IngameScript
                     return @out;
                 };
 
-                double thrusterPower = vectorProjectionScalar(_missileForward, Vector3D.Normalize(lateralAcceleration));
+                double thrusterPower = vectorProjectionScalar(_forwardVector, Vector3D.Normalize(lateralAcceleration));
 
                 thrusterPower = (Merge.CubeGrid.GridSizeEnum == MyCubeSize.Large) ? MathHelper.Clamp(thrusterPower, 0.9, 1) : thrusterPower;
 
@@ -918,17 +1039,24 @@ namespace IngameScript
                 }
                 lateralAcceleration = lateralAcceleration + this._currentLOS * RejectedAccel;
 
-
                 am = Vector3D.Normalize(lateralAcceleration + GravityComp);
 
                 double Yaw; double Pitch;
 
-                CalculateGyroRotation(am, 18, 0.3, _gyros, this._lastYaw, this._lastPitch, out Pitch, out Yaw);
+                _gyros.RemoveAll(g => g.Closed);
+                try
+                {
+                    CalculateGyroRotation(am, 18, 0.3, _gyros, this._lastYaw, this._lastPitch, out Pitch, out Yaw);
+                    this._lastTargetPosition = TargetPosition;
+                    this._lastPosition = Position;
+                    this._lastYaw = Yaw;
+                    this._lastPitch = Pitch;
 
-                this._lastTargetPosition = TargetPosition;
-                this._lastPosition = Position;
-                this._lastYaw = Yaw;
-                this._lastPitch = Pitch;
+                    this._lastLosRate = losRate;
+                    this._lastTargetVelocity = targetVelocity;
+                    this._lastMissileVelocity = missileVelocity;
+                }
+                catch { }
             }
 
 
@@ -937,10 +1065,10 @@ namespace IngameScript
                 newPitch = 0;
                 newYaw = 0;
 
-                var missileUpVector = _thrusters.First().WorldMatrix.Up;
-                var missileForwardVector = _thrusters.First().WorldMatrix.Backward;
+                _upVector = _thrusters.First().WorldMatrix.Up;
+                _forwardVector = _thrusters.First().WorldMatrix.Backward;
 
-                Quaternion shipOrientation = Quaternion.CreateFromForwardUp(missileForwardVector, missileUpVector);
+                Quaternion shipOrientation = Quaternion.CreateFromForwardUp(_forwardVector, _upVector);
                 var inverseOrientation = Quaternion.Inverse(shipOrientation);
 
                 Vector3D transformedDirection = targetDirection;
@@ -961,9 +1089,8 @@ namespace IngameScript
                 if (_currentRoll > Math.PI * 2)
                     _currentRoll -= Math.PI * 2;
 
-                var referenceMatrix = MatrixD.CreateWorld(_thrusters.First().GetPosition(), (Vector3)missileForwardVector, (Vector3)missileUpVector).GetOrientation();
-                var pitchYawRollVector = Vector3.Transform(new Vector3D(shipForwardElevation, shipForwardAzimuth, _currentRoll), referenceMatrix);
-
+                var referenceMatrix = MatrixD.CreateWorld(_thrusters.First().GetPosition(), (Vector3)_forwardVector, (Vector3)_upVector).GetOrientation();
+                var pitchYawRollVector = Vector3.Transform(new Vector3D(shipForwardElevation, shipForwardAzimuth, _currentRoll), referenceMatrix);               
                 foreach (var gyroscope in gyroscopes)
                 {
                     var transformedVector = Vector3.Transform(pitchYawRollVector, Matrix.Transpose(gyroscope.WorldMatrix.GetOrientation()));
@@ -988,23 +1115,31 @@ namespace IngameScript
             private double _spin = 0;
             private double _pngGain = 2.5;
             private double _mass = 0;
-            private double _detonationDistance = 90;
+            private double _cargeMass = 5000;
+            private double _detonationDistance = 2;
 
             private int _detonationDelay = 0;
             private int _warheadCount = 0;
-
+            private bool _nukeOverride = false;
             private int _trackingDelay = 0;
             private int _missileTicks = 0;
 
+            private double _derivativeControlGain = 0.01;
+            private double _accelerationCorrectionGain = 0.01;
+
+            private long _ticksSinceLastTargetUpdate = 0;
+
+            private double _lastLosRate = 0;
+            private Vector3D _lastTargetVelocity = Vector3D.Zero;
+            private Vector3D _lastMissileVelocity = Vector3D.Zero;
             private double _acceleration = 0;
+            private Vector3D _upVector = Vector3D.Zero;
             private Vector3D _currentLOS = Vector3D.Zero;
             private Vector3D _lastLOS = Vector3D.Zero;
             private Vector3D _lastTargetPosition = Vector3D.Zero;
             private Vector3D _lastPosition = Vector3D.Zero;
             private List<IMyTerminalBlock> _blockList = new List<IMyTerminalBlock>(); //To filter on launch
-            private Vector3D _missileForward = Vector3D.Zero;
-
-            private HashSet<MyDefinitionId> _wcDefinitions = new HashSet<MyDefinitionId>();
+            private Vector3D _forwardVector = Vector3D.Zero;
 
             private List<IMyProgrammableBlock> _programmableBlocks = new List<IMyProgrammableBlock>();
             private List<IMyShipConnector> _connectors = new List<IMyShipConnector>();
@@ -1026,7 +1161,6 @@ namespace IngameScript
                 get { return _displays; }
                 set { _displays = value; }
             }
-
             public string Tag
             {
                 get { return _tag; }
@@ -1067,6 +1201,7 @@ namespace IngameScript
                 get { return _targetDistance; }
                 set { _targetDistance = value; }
             }
+
             public HUD(List<IMyTextPanel> displays)
             {
                 Displays = displays;
@@ -1143,9 +1278,9 @@ namespace IngameScript
                 frame.Add(new MySprite(SpriteType.TEXT, _targetDistance, new Vector2(-230f, -3f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 0.7f * scale)); // tDistance
 
                 float xOffset = -550f;
-                float yOffset = 300f;
+                float yOffset = 350f;
 
-                for (int i = 0; i < _activeMissileCount; i++)
+                for (int i = 0; i < (_activeMissileCount + _missileCount); i++)
                 {
                     if (i == 20)
                         break;
@@ -1153,28 +1288,15 @@ namespace IngameScript
                     if (i == 10)
                     {
                         xOffset = -550f;
-                        yOffset += 200f;
+                        yOffset += 150f;
                     }
-                    DrawMissileSprite(ref frame, new Vector2(xOffset, yOffset), centerPos, _activeMissileColor, 0.4f);
+                    if (i < _activeMissileCount)
+                        DrawMissileSprite(ref frame, new Vector2(xOffset, yOffset), centerPos, _activeMissileColor, 0.4f);
+                    else
+                        DrawMissileSprite(ref frame, new Vector2(xOffset, yOffset), centerPos, _protoMissileColor, 0.4f);
+
                     xOffset += 120f;
                 }
-
-                for (int i = 0; i < _missileCount; i++)
-                {
-                    if (i == 20)
-                        break;
-
-                    if (i == 10)
-                    {
-                        xOffset = -550f;
-                        yOffset += 200f;
-                    }
-                    DrawMissileSprite(ref frame, new Vector2(xOffset, yOffset), centerPos, _protoMissileColor, 0.4f);
-                    xOffset += 120f;
-                }
-
-
-
 
             }
 
@@ -1199,7 +1321,8 @@ namespace IngameScript
             private string _targetLocation = "";
             private string _targetSpeed = "";
             private string _targetDistance = "";
-
+            private float _cargoMass = 0;
+              
 
             private List<IMyTextPanel> _displays = new List<IMyTextPanel>();
         }
@@ -1243,7 +1366,7 @@ namespace IngameScript
         };
 
 
-        enum FireMode { Weaponcore, Raycast, GPS, Sentry }
+
 
         class RaycastHoming //thanks whiplash
         {
@@ -1280,6 +1403,12 @@ namespace IngameScript
             public double MaxTimeForLockBreak { get; private set; }
             public MyRelationsBetweenPlayerAndBlock TargetRelation { get; private set; }
             public MyDetectedEntityType TargetType { get; private set; }
+            public long TimeSinceLastRaycast { 
+                get
+                {
+                    return (_currentTimeStamp - _lastTimeStamp);
+                } 
+            }
 
             public enum TargetingStatus { NotLocked, Locked, TooClose };
             enum AimMode { Center, Offset, OffsetRelative };
@@ -1295,7 +1424,9 @@ namespace IngameScript
             double _timeSinceLastScan = 0;
             bool _manualLockOverride = false;
             bool _fudgeVectorSwitch = false;
-
+            long _lastTimeStamp = 0;
+            long _currentTimeStamp = 0;
+            long _ticks = 0;
             double AutoScanScaleFactor
             {
                 get
@@ -1579,6 +1710,10 @@ namespace IngameScript
 
                     MissedLastScan = false;
                     UpdateTargetStateVectors(info.Position, info.HitPosition.Value, info.Velocity);
+
+                    _lastTimeStamp = _currentTimeStamp;
+                    _currentTimeStamp = _ticks;
+
                     TargetSize = info.BoundingBox.Size.Length();
                     _targetOrientation = info.Orientation;
 
@@ -1609,6 +1744,7 @@ namespace IngameScript
             public void Update(double timeStep, List<IMyCameraBlock> cameraList, List<IMyShipController> shipControllers, IMyTerminalBlock referenceBlock = null)
             {
                 _timeSinceLastScan += timeStep;
+                _ticks++;
 
                 if (!IsScanning)
                     return;
@@ -1799,9 +1935,6 @@ namespace IngameScript
             public MyDetectedEntityInfo? GetAiFocus(long shooter, int priority = 0) => _getAiFocus?.Invoke(shooter, priority);
 
         }
-
-
-
 
 
     }
