@@ -308,6 +308,11 @@ namespace IngameScript
 
         void FireMissile(IMyShipMergeBlock mergeBlock, int trackingDelay = 0, long entityId = 0)
         {
+            if (ActiveMissiles.Exists(m => m.Merge == mergeBlock))
+            {
+                throw new Exception("Attempted to fire a missile that was already fired.");
+            }
+
             var blocks = new List<IMyTerminalBlock>();
             GridTerminalSystem.GetBlocks(blocks);
 
@@ -316,18 +321,17 @@ namespace IngameScript
             switch (Mode)
             {
                 case FireMode.Weaponcore:
-                    if (UsingWeaponcore)
-                    {
-                        var target = Wc.GetAiFocus(Me.CubeGrid.EntityId);
-                        if (target.Value.EntityId == 0)
-                            return;
-                        missile.TargetId = target.Value.EntityId;
-                        missile.FireMissile(target.Value.Position);
-                    }
+                    if (!UsingWeaponcore)
+                        return;
+                    var target = Wc.GetAiFocus(Me.CubeGrid.EntityId);
+                    if (target.Value.EntityId == 0)
+                        return;
+                    missile.TargetId = target.Value.EntityId;
+                    missile.FireMissile(target.Value.Position);
                     break;
 
                 case FireMode.Raycast:
-                    if (HasRaycast && RC.Status != RaycastHoming.TargetingStatus.Locked)
+                    if (!HasRaycast || RC.Status != RaycastHoming.TargetingStatus.Locked)
                         return;
 
                     missile.TargetId = RC.TargetId;
@@ -507,26 +511,6 @@ namespace IngameScript
             activeMissiles.ForEach(m => m.Update());
         }
 
-        bool ParseVector3DFromGPS(string gps, out Vector3D vec)
-        {
-            vec = Vector3D.Zero;
-            if (!gps.StartsWith("GPS:"))
-            {
-                return false;
-            }
-            string[] segments = gps.Split(':');
-            if (segments.Length < 6)
-            {
-                return false;
-            }
-            if (!double.TryParse(segments[2], out vec.X) || !double.TryParse(segments[3], out vec.Y) || !double.TryParse(segments[4], out vec.Z))
-            {
-                return false;
-            }
-            return true;
-        }
-
-
 
 
         Dictionary<MyDetectedEntityInfo, float> potentialTargets = new Dictionary<MyDetectedEntityInfo, float>();
@@ -573,7 +557,6 @@ namespace IngameScript
 
         void GetMissiles(ref HashSet<IMyShipMergeBlock> missiles)
         {
-
             var mergeBlocks = new List<IMyShipMergeBlock>();
             GridTerminalSystem.GetBlocksOfType(mergeBlocks);
             missiles.RemoveWhere(b => b.Closed || b == null);
@@ -586,6 +569,9 @@ namespace IngameScript
                     continue;
 
                 if (!block.CustomName.Contains(MissileTag))
+                    continue;
+
+                if (ActiveMissiles.Exists(active => active.Merge == block))
                     continue;
 
                 missiles.Add(block);
