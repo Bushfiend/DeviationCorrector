@@ -40,11 +40,13 @@ namespace IngameScript
         const int TicksPerSecond = 60;
         const string DebugLCDName = "Debug";
 
+        const string HudTag = "[hud]";
+        const string MainCameraTag = "[main]";
+
         //MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/SemiAutoPistolMagazine");
         MyItemType NukeAmmoDef = MyItemType.Parse("MyObjectBuilder_AmmoMagazine/FlareClip");
 
         int NukeAmmoAmount = 10000;
-
         bool SetupCompleted = false;
 
         HashSet<MyDefinitionId> WeaponcoreDefinitions = new HashSet<MyDefinitionId>();
@@ -200,7 +202,7 @@ namespace IngameScript
         {
             Hud.Tag = "UDR - PVE";
             Hud.Mode = $"Mode: {Mode}";
-
+            Hud.Missiles = ActiveMissiles;
             switch (Mode)
             {
                 case FireMode.Weaponcore:
@@ -237,7 +239,7 @@ namespace IngameScript
                     }
                     else if (RC.Status == RaycastHoming.TargetingStatus.Locked)
                     {
-                        Hud.TargetName = $"Target Locked:{RC.TargetId}";
+                        Hud.TargetName = $"Target Locked:{RC.TargetName}";
                         Hud.TargetDistance = $"Distance: {Math.Round(Vector3D.Distance(Me.GetPosition(), RC.HitPosition))}m";
                         var location2 = RC.HitPosition;
                         Hud.TargetLocation = $"Location: X:{Math.Round(location2.X, 2)} Y:{Math.Round(location2.Y, 2)} Z:{Math.Round(location2.Z, 2)} ";
@@ -347,10 +349,6 @@ namespace IngameScript
                     missile.TargetId = entityId;
                     break;
             }
-
-            int index = Rand.Next(Quotes.Length);
-            missile.HudText = Quotes[index];
-
             ActiveMissiles.Add(missile);
             ProtoMissiles.Remove(mergeBlock);
 
@@ -471,26 +469,19 @@ namespace IngameScript
             var tempBlocks = new List<IMyTerminalBlock>();
             scriptGroup.GetBlocks(tempBlocks);
 
-            var displays = tempBlocks.FindAll(b => b is IMyTextPanel);
-            if (displays.Count > 0)
-            {
-                HasHud = true;
-                var d = new List<IMyTextPanel>();
-                foreach (var block in displays)
-                {
-                    d.Add(block as IMyTextPanel);
-                }
+            IMyCameraBlock mainCamera = null;
 
-                Hud = new HUD(d);
-
-            }
-            AlertBlock = tempBlocks.Find(s => s is IMySoundBlock) as IMySoundBlock;
             var cameras = tempBlocks.FindAll(b => b is IMyCameraBlock);
             if (cameras.Count > 0)
             {
                 HasRaycast = true;
                 foreach (var block in cameras)
                 {
+                    if (block.CustomName.ToLower().Contains(MainCameraTag))
+                    {
+                        mainCamera = block as IMyCameraBlock;
+                        continue;
+                    }
                     RaycastArray.Add(block as IMyCameraBlock);
                     ((IMyCameraBlock)block).EnableRaycast = true;
                 }
@@ -509,8 +500,32 @@ namespace IngameScript
                         RC.AddIgnoredGridID(mc.TopGrid.EntityId);
                 }
             }
-
             GridTerminalSystem.GetBlocksOfType(Controllers);
+            var displays = tempBlocks.FindAll(b => b is IMyTextPanel);
+            if (displays.Count > 0)
+            {
+                HasHud = true;
+                var infoDisplays = new List<IMyTextPanel>();
+                var hudDisplays = new List<IMyTextPanel>();
+
+                foreach (var block in displays)
+                {
+                    if(block.CustomName.ToLower().Contains(HudTag))
+                    {
+                        hudDisplays.Add(block as IMyTextPanel);
+                        continue;
+                    }
+                    infoDisplays.Add(block as IMyTextPanel);
+                }
+                if (infoDisplays.Count > 0 && hudDisplays.Count > 0 && mainCamera != null)
+                    Hud = new HUD(infoDisplays, hudDisplays, mainCamera);
+                else if (infoDisplays.Count > 0)
+                    Hud = new HUD(infoDisplays);            
+            }
+          
+            AlertBlock = tempBlocks.Find(s => s is IMySoundBlock) as IMySoundBlock;      
+
+            
 
             Echo("Setup Complete");
             SetupCompleted = true;
@@ -536,6 +551,8 @@ namespace IngameScript
             foreach (var target in potentialTargets)
             {
                 if (target.Key.Relationship != MyRelationsBetweenPlayerAndBlock.Enemies)
+                    continue;
+                if (target.Key.Relationship == MyRelationsBetweenPlayerAndBlock.Neutral)
                     continue;
                 if (EngagedTargets.ContainsKey(target.Key.EntityId))
                     continue;
@@ -872,13 +889,7 @@ namespace IngameScript
                         ((IMyBatteryBlock)block).Enabled = true;
                         ((IMyBatteryBlock)block).ChargeMode = ChargeMode.Discharge;
                         continue;
-                    }
-                    if (block is IMyBeacon)
-                    {
-                        ((IMyBeacon)block).HudText = HudText;
-                        ((IMyBeacon)block).Radius = 1000f;
-                        continue;
-                    }
+                    }                  
                     if (block is IMyProgrammableBlock)
                     {
                         _programmableBlocks.Add(block as IMyProgrammableBlock);
@@ -1099,10 +1110,6 @@ namespace IngameScript
                 shipForwardElevation += dampingGain * ((shipForwardElevation - previousPitch) / GameTick);
 
 
-                //_currentRoll += _spin;
-               // if (_currentRoll > Math.PI * 2)
-                    //_currentRoll -= Math.PI * 2;
-
                 if (Math.Abs(_rpm) > 1e-3)
                 {
                     _currentRoll = _rpm * RpmToRad;
@@ -1146,8 +1153,6 @@ namespace IngameScript
 
             private double _derivativeControlGain = 0.05;
             private double _accelerationCorrectionGain = 0.05;
-
-            private long _ticksSinceLastTargetUpdate = 0;
 
             private double _lastLosRate = 0;
             private Vector3D _lastTargetVelocity = Vector3D.Zero;
@@ -1232,14 +1237,20 @@ namespace IngameScript
                 get { return _targetDistance; }
                 set { _targetDistance = value; }
             }
-
+            public List<DeviationCorrector> Missiles
+            {
+                set 
+                { 
+                    _activeMissiles = value; 
+                }
+            }
             public HUD(List<IMyTextPanel> InfoDisplays, List<IMyTextPanel> hudDisplays, IMyCameraBlock camera = null)
             {
                 InfoPanels = InfoDisplays;
                 HudPanels = hudDisplays;
                 if(camera != null)
                     Camera = camera;
-
+                _usingHud = true;
                 SetupLcds();              
             }
             public HUD(List<IMyTextPanel> InfoDisplays, IMyCameraBlock camera = null)
@@ -1248,6 +1259,11 @@ namespace IngameScript
                 HudPanels = new List<IMyTextPanel>();
                 if (camera != null)
                     Camera = camera;
+                SetupLcds();
+            }
+            public HUD(List<IMyTextSurface> surfaces)
+            {
+                _textSurfaces = surfaces;
                 SetupLcds();
             }
 
@@ -1268,7 +1284,16 @@ namespace IngameScript
                         display.ContentType = ContentType.SCRIPT;
                         display.ScriptBackgroundColor = new Color(0, 0, 0, 255);
                     }
-                }             
+                }     
+                if(_textSurfaces.Count > 0)
+                {
+                    foreach(var display in _textSurfaces)
+                    {
+                        display.ContentType = ContentType.SCRIPT;
+                        display.ScriptBackgroundColor = new Color(0, 0, 0, 255);
+                    }
+                }
+
             }
 
             public void UpdateLcds()
@@ -1280,36 +1305,94 @@ namespace IngameScript
                 }
                 _ticks = 0;
                 _infoPanels.RemoveAll(d => d.Closed || d == null);
-                _hudPanels.RemoveAll(d => d.Closed || d == null);              
-                
-                if(_infoPanels.Count > 0)
-                {
-                    if (_activeMissileColor == Color.Yellow)
-                        _activeMissileColor = Color.OrangeRed;
-                    else
-                        _activeMissileColor = Color.Yellow;
+                _hudPanels.RemoveAll(d => d.Closed || d == null);
 
-                    List<MySprite> spriteList = new List<MySprite>();
-                    Vector2 center = Vector2.Zero;
-                    MySpriteDrawFrame frame;
-
-                    foreach (var display in _infoPanels)
-                    {
-                        var drawSurface = display.TextureSize;
-                        var expectedCenter = new Vector2(drawSurface.X / 2f, drawSurface.Y / 2f);
-
-                        if (center != expectedCenter)
-                        {
-                            center = expectedCenter;
-                            spriteList.Clear();
-                            spriteList = DrawInfoPanel(center, 1);
-                        }                         
-                        frame = display.DrawFrame();  
-                        frame.AddRange(spriteList);
-                        frame.Dispose();
-                    }
-                }            
+                DrawInfo();
+                if(_usingHud)
+                    DrawHud();
             }
+
+
+            private void DrawInfo()
+            {
+                if (_infoPanels.Count == 0)
+                    return;
+                if (_activeMissileColor == Color.Yellow)
+                    _activeMissileColor = Color.OrangeRed;
+                else
+                    _activeMissileColor = Color.Yellow;
+
+                List<MySprite> spriteList = new List<MySprite>();
+                Vector2 center = Vector2.Zero;
+                MySpriteDrawFrame frame;
+
+                foreach (var display in _infoPanels)
+                {
+                    var drawSurface = display.TextureSize;
+                    var expectedCenter = new Vector2(drawSurface.X / 2f, drawSurface.Y / 2f);
+
+                    if (center != expectedCenter)
+                    {
+                        center = expectedCenter;
+                        spriteList.Clear();
+                        spriteList = DrawInfoPanel(center, 1);
+                    }
+                    frame = display.DrawFrame();
+                    frame.AddRange(spriteList);
+                    frame.Dispose();
+                }         
+            }
+            private void DrawHud()
+            {
+                if (_hudPanels.Count == 0)
+                    return;
+                var position = Vector2.Zero;
+                var position2 = Vector2.Zero;
+                foreach (var display in _hudPanels)
+                {
+                    var drawSurface = display.TextureSize;
+                    var center = new Vector2(drawSurface.X / 2f, drawSurface.Y / 2f);
+                    var frame = display.DrawFrame();
+
+                    foreach (var missile in _activeMissiles)
+                    {
+                        if(!WorldPositionToScreenPosition(missile.Position, _camera, display, out position))
+                            continue;
+
+                        frame.AddRange(DrawHudMissile(center, position, missile.Id));
+                        WorldPositionToScreenPosition(missile.TargetPosition, _camera, display, out position2);
+
+                        frame.Add(DrawLine(position, position2, 0.3f, Color.Red));
+                    }
+                    frame.Dispose();
+                }
+            }
+
+            private List<MySprite> DrawHudMissile(Vector2 centerPos, Vector2 pos, string text, float scale = 1f)
+            {
+                var spriteList = new List<MySprite>();
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "Circle", pos * scale, new Vector2(10f, 10f) * scale, new Color(255, 128, 0, 255), null, TextAlignment.CENTER, 0f));
+                spriteList.Add(new MySprite(SpriteType.TEXT, text, new Vector2(pos.X + 5f,pos.Y + -15f) * scale, null, new Color(255, 255, 255, 255), "DEBUG", TextAlignment.LEFT, 0.4f * scale));
+                return spriteList;
+            }
+            private MySprite DrawLine(Vector2 point1, Vector2 point2, float width, Color color)
+            {
+                Vector2 position = 0.5f * (point1 + point2);
+                Vector2 diff = point1 - point2;
+                float length = diff.Length();
+                if (length > 0)
+                    diff /= length;
+
+                Vector2 size = new Vector2(length, width);
+                float angle = (float)Math.Acos(Vector2.Dot(diff, Vector2.UnitX));
+                angle *= Math.Sign(Vector2.Dot(diff, Vector2.UnitY));
+
+                var sprite = MySprite.CreateSprite("SquareSimple", position, size);
+                sprite.RotationOrScale = angle;
+                sprite.Color = color;
+                return sprite;
+            }
+
 
             private List<MySprite> DrawInfoPanel(Vector2 centerPos, float scale = 1f)
             {
@@ -1357,6 +1440,16 @@ namespace IngameScript
                 }
                 return spriteList;
             }
+            private List<MySprite> DrawMissileSprite(Vector2 pos, Vector2 centerPos, Color color, float scale)
+            {
+                List<MySprite> spriteList = new List<MySprite>();
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SemiCircle", pos * scale + centerPos, new Vector2(30f, 90f) * scale, color, null, TextAlignment.CENTER, 0f));
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(pos.X, pos.Y + 22f) * scale + centerPos, new Vector2(30f, 40f) * scale, color, null, TextAlignment.CENTER, 0f));
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(pos.X, pos.Y + 64f) * scale + centerPos, new Vector2(30f, 40f) * scale, color, null, TextAlignment.CENTER, 0f));
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(pos.X + 21f, pos.Y + 60f) * scale + centerPos, new Vector2(20f, 30f) * scale, color, null, TextAlignment.CENTER, -0.3491f));
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(pos.X - 21f, pos.Y + 60f) * scale + centerPos, new Vector2(20f, 30f) * scale, color, null, TextAlignment.CENTER, 0.3491f));
+                return spriteList;
+            }
             bool WorldPositionToScreenPosition(Vector3D worldPosition, IMyCameraBlock cam, IMyTextPanel screen, out Vector2 screenPositionPx)
             {
                 screenPositionPx = Vector2.Zero;
@@ -1389,16 +1482,7 @@ namespace IngameScript
                 return true;
             }
 
-            private List<MySprite> DrawMissileSprite(Vector2 pos, Vector2 centerPos, Color color, float scale)
-            {
-                List<MySprite> spriteList = new List<MySprite>();
-                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SemiCircle", pos * scale + centerPos, new Vector2(30f, 90f) * scale, color, null, TextAlignment.CENTER, 0f));
-                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(pos.X, pos.Y + 22f) * scale + centerPos, new Vector2(30f, 40f) * scale, color, null, TextAlignment.CENTER, 0f));
-                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(pos.X, pos.Y + 64f) * scale + centerPos, new Vector2(30f, 40f) * scale, color, null, TextAlignment.CENTER, 0f));
-                spriteList.Add(new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(pos.X + 21f, pos.Y + 60f) * scale + centerPos, new Vector2(20f, 30f) * scale, color, null, TextAlignment.CENTER, -0.3491f));
-                spriteList.Add(new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(pos.X - 21f, pos.Y + 60f) * scale + centerPos, new Vector2(20f, 30f) * scale, color, null, TextAlignment.CENTER, 0.3491f));
-                return spriteList;
-            }
+            List<DeviationCorrector> _activeMissiles = new List<DeviationCorrector>();
 
             private int _ticks = 0;
             const int updateFrequency = 20;
@@ -1415,46 +1499,10 @@ namespace IngameScript
             private IMyCameraBlock _camera = null;
             private List<IMyTextPanel> _hudPanels = new List<IMyTextPanel>();
             private List<IMyTextPanel> _infoPanels = new List<IMyTextPanel>();
-
+            private bool _usingHud = false;
+            private List<IMyTextSurface> _textSurfaces = new List<IMyTextSurface>(); 
         }
 
-        string[] Quotes =
-        {
-            "My name is Van, I'm an Artist.",
-            "Deep Dark Fantasies.",
-            "AHHHHHHHHH!!!!!",
-            "Let's celebrate and drill some ore.",
-            "Drilling is 300 bucks.",
-            "Now theres a drill I wouldn't mind fucking.",
-            "I wanna see six hot loads.",
-            "Ass We Can.",
-            "It gets bigger when I pull on it.",
-            "You ripped my fucking pants.",
-            "How do you like that huh?",
-            "I'll show you whos boss of this gym.",
-            "Ohhh I'm fucking drilling!",
-            "I'm a perfomance artist.",
-            "Just lube it up.",
-            "It's a long process.",
-            "Fucking peice of meat.",
-            "Yeah, work that tool..",
-            "Sir, yes sir.",
-            "SHEEEET",
-            "Crate of iron Cocks.",
-            "Leather Rebel",
-            "Dildo Thrower MK-1",
-            "GET YOUR ASS BACK HERE",
-            "It's wrestling time!",
-            "Boy next door.",
-            "Ooh, that’s good.",
-            "Take it, boy!",
-            "Drilling supplies are two aisles down.",
-            "It's time for the final drilling session!",
-            "Trust me, size matters when it comes to drill bits.",
-            "Always wear protective gear when drilling.",
-            "You think that's a powerful drill? Try this one.",
-            "Feels like the drill's going in deep today."
-        };
 
 
 
@@ -1481,6 +1529,7 @@ namespace IngameScript
             public Vector3D TargetVelocity { get; private set; } = Vector3D.Zero;
             public Vector3D HitPosition { get; private set; } = Vector3D.Zero;
             public Vector3D PreciseModeOffset { get; private set; } = Vector3D.Zero;
+            public string TargetName { get; private set; } = "";
             public bool OffsetTargeting = false;
             public bool MissedLastScan { get; private set; } = false;
             public bool LockLost { get; private set; } = false;
@@ -1814,6 +1863,7 @@ namespace IngameScript
                         TargetId = info.EntityId;
                         TargetRelation = info.Relationship;
                         TargetType = info.Type;
+                        TargetName = info.Name;
 
                         // Compute aim offset
                         if (!_manualLockOverride)
