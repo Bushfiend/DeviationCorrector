@@ -1099,14 +1099,20 @@ namespace IngameScript
                 shipForwardElevation += dampingGain * ((shipForwardElevation - previousPitch) / GameTick);
 
 
-                _currentRoll += _spin;
-                if (_currentRoll > Math.PI * 2)
-                    _currentRoll -= Math.PI * 2;
+                //_currentRoll += _spin;
+               // if (_currentRoll > Math.PI * 2)
+                    //_currentRoll -= Math.PI * 2;
 
+                if (Math.Abs(_rpm) > 1e-3)
+                {
+                    _currentRoll = _rpm * RpmToRad;
+                }
+               
                 var referenceMatrix = MatrixD.CreateWorld(_thrusters.First().GetPosition(), (Vector3)_forwardVector, (Vector3)_upVector).GetOrientation();
                 var pitchYawRollVector = Vector3.Transform(new Vector3D(shipForwardElevation, shipForwardAzimuth, _currentRoll), referenceMatrix);               
                 foreach (var gyroscope in gyroscopes)
                 {
+
                     var transformedVector = Vector3.Transform(pitchYawRollVector, Matrix.Transpose(gyroscope.WorldMatrix.GetOrientation()));
                     if (double.IsNaN(transformedVector.X) || double.IsNaN(transformedVector.Y) || double.IsNaN(transformedVector.Z))
                     {
@@ -1126,7 +1132,7 @@ namespace IngameScript
             private double _lastYaw = 0;
             private double _lastPitch = 0;
             private double _currentRoll = 0;
-            private double _spin = 0.9;
+            private double _rpm = 10;
             private double _pngGain = 2.5;
             private double _mass = 0;
             private double _cargeMass = 5000;
@@ -1138,8 +1144,8 @@ namespace IngameScript
             private int _trackingDelay = 0;
             private int _missileTicks = 0;
 
-            private double _derivativeControlGain = 0.1;
-            private double _accelerationCorrectionGain = 0.1;
+            private double _derivativeControlGain = 0.05;
+            private double _accelerationCorrectionGain = 0.05;
 
             private long _ticksSinceLastTargetUpdate = 0;
 
@@ -1164,6 +1170,7 @@ namespace IngameScript
             private List<IMyGyro> _gyros = new List<IMyGyro>();
             private List<IMyBatteryBlock> _batteryBlocks = new List<IMyBatteryBlock>();
             private bool _tickWaited = false;
+            const double RpmToRad = Math.PI / 30;
 
         }
 
