@@ -10,6 +10,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 using VRage;
@@ -50,6 +51,7 @@ namespace IngameScript
         Dictionary<long, long> EngagedTargets = new Dictionary<long, long>();
 
         IMyTextPanel DebugLcd = null;
+        IMySoundBlock AlertBlock = null;
         WcPbApi Wc;
 
         bool UsingWeaponcore = false;
@@ -153,7 +155,19 @@ namespace IngameScript
         }
 
 
+        void PlaySound(string scanSound, string lockSound)
+        {
+            if (AlertBlock == null || AlertBlock.Closed)
+                return;
 
+            if (RC.Status == RaycastHoming.TargetingStatus.NotLocked && RC.IsScanning)
+            {
+                AlertBlock.SelectedSound = scanSound;
+            }
+                
+
+
+        }
         void Raycast()
         {
             if (!HasRaycast)
@@ -470,7 +484,7 @@ namespace IngameScript
                 Hud = new HUD(d);
 
             }
-
+            AlertBlock = tempBlocks.Find(s => s is IMySoundBlock) as IMySoundBlock;
             var cameras = tempBlocks.FindAll(b => b is IMyCameraBlock);
             if (cameras.Count > 0)
             {
@@ -1112,11 +1126,11 @@ namespace IngameScript
             private double _lastYaw = 0;
             private double _lastPitch = 0;
             private double _currentRoll = 0;
-            private double _spin = 0;
+            private double _spin = 0.9;
             private double _pngGain = 2.5;
             private double _mass = 0;
             private double _cargeMass = 5000;
-            private double _detonationDistance = 2;
+            private double _detonationDistance = 85;
 
             private int _detonationDelay = 0;
             private int _warheadCount = 0;
@@ -1124,8 +1138,8 @@ namespace IngameScript
             private int _trackingDelay = 0;
             private int _missileTicks = 0;
 
-            private double _derivativeControlGain = 0.01;
-            private double _accelerationCorrectionGain = 0.01;
+            private double _derivativeControlGain = 0.1;
+            private double _accelerationCorrectionGain = 0.1;
 
             private long _ticksSinceLastTargetUpdate = 0;
 
@@ -1156,10 +1170,20 @@ namespace IngameScript
 
         class HUD
         {
-            public List<IMyTextPanel> Displays
+            public List<IMyTextPanel> InfoPanels
             {
-                get { return _displays; }
-                set { _displays = value; }
+                get { return _infoPanels; }
+                set { _infoPanels = value; }
+            }
+            public List<IMyTextPanel> HudPanels
+            {
+                get { return _hudPanels; }
+                set { _hudPanels = value; }
+            }
+            public IMyCameraBlock Camera
+            {
+                get { return _camera; }
+                set { _camera = value; }
             }
             public string Tag
             {
@@ -1202,80 +1226,109 @@ namespace IngameScript
                 set { _targetDistance = value; }
             }
 
-            public HUD(List<IMyTextPanel> displays)
+            public HUD(List<IMyTextPanel> InfoDisplays, List<IMyTextPanel> hudDisplays, IMyCameraBlock camera = null)
             {
-                Displays = displays;
-                SetupLcds();
+                InfoPanels = InfoDisplays;
+                HudPanels = hudDisplays;
+                if(camera != null)
+                    Camera = camera;
 
+                SetupLcds();              
             }
-
-
+            public HUD(List<IMyTextPanel> InfoDisplays, IMyCameraBlock camera = null)
+            {
+                InfoPanels = InfoDisplays;
+                HudPanels = new List<IMyTextPanel>();
+                if (camera != null)
+                    Camera = camera;
+                SetupLcds();
+            }
 
             private void SetupLcds()
             {
-                foreach (var display in _displays)
+                if(_hudPanels != null)
                 {
-                    display.ContentType = ContentType.SCRIPT;
-                    display.ScriptBackgroundColor = new Color(0, 0, 0, 255);
+                    foreach (var display in _hudPanels)
+                    {
+                        display.ContentType = ContentType.SCRIPT;
+                        display.ScriptBackgroundColor = new Color(0, 0, 0, 255);
+                    }
                 }
+                if(_infoPanels != null)
+                {
+                    foreach (var display in _infoPanels)
+                    {
+                        display.ContentType = ContentType.SCRIPT;
+                        display.ScriptBackgroundColor = new Color(0, 0, 0, 255);
+                    }
+                }             
             }
 
             public void UpdateLcds()
-            {
+            {                           
                 if (_ticks < updateFrequency)
                 {
                     _ticks++;
                     return;
                 }
                 _ticks = 0;
-
-                if (_activeMissileColor == Color.Yellow)
+                _infoPanels.RemoveAll(d => d.Closed || d == null);
+                _hudPanels.RemoveAll(d => d.Closed || d == null);              
+                
+                if(_infoPanels.Count > 0)
                 {
-                    _activeMissileColor = Color.OrangeRed;
-                }
-                else
-                {
-                    _activeMissileColor = Color.Yellow;
-                }
+                    if (_activeMissileColor == Color.Yellow)
+                        _activeMissileColor = Color.OrangeRed;
+                    else
+                        _activeMissileColor = Color.Yellow;
 
-                _displays.RemoveAll(d => d.Closed || d == null);
+                    List<MySprite> spriteList = new List<MySprite>();
+                    Vector2 center = Vector2.Zero;
+                    MySpriteDrawFrame frame;
 
-                foreach (var display in _displays)
-                {
-                    var frame = display.DrawFrame();
-                    var drawSurface = display.TextureSize;
-                    Vector2 centerPos = new Vector2(drawSurface.X / 2f, drawSurface.Y / 2f);
+                    foreach (var display in _infoPanels)
+                    {
+                        var drawSurface = display.TextureSize;
+                        var expectedCenter = new Vector2(drawSurface.X / 2f, drawSurface.Y / 2f);
 
-                    DrawBackground(frame, centerPos, 1);
-                    frame.Dispose();
-                }
-
-
+                        if (center != expectedCenter)
+                        {
+                            center = expectedCenter;
+                            spriteList.Clear();
+                            spriteList = DrawInfoPanel(center, 1);
+                        }                         
+                        frame = display.DrawFrame();  
+                        frame.AddRange(spriteList);
+                        frame.Dispose();
+                    }
+                }            
             }
 
-            private void DrawBackground(MySpriteDrawFrame frame, Vector2 centerPos, float scale = 1f)
+            private List<MySprite> DrawInfoPanel(Vector2 centerPos, float scale = 1f)
             {
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -247f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(199, 99, 247, 255), null, TextAlignment.CENTER, 0f)); // b9
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(1f, -167f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(148, 0, 148, 255), null, TextAlignment.CENTER, 0f)); // b8
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -177f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(51, 0, 148, 255), null, TextAlignment.CENTER, 0f)); // b7
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -187f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(0, 148, 197, 255), null, TextAlignment.CENTER, 0f)); // b6
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -197f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(0, 148, 0, 255), null, TextAlignment.CENTER, 0f)); // b5
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -207f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(247, 247, 1, 255), null, TextAlignment.CENTER, 0f)); // b4
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -217f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(246, 148, 0, 255), null, TextAlignment.CENTER, 0f)); // b3
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -227f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(246, 0, 0, 255), null, TextAlignment.CENTER, 0f)); // b2
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -237f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(247, 98, 148, 255), null, TextAlignment.CENTER, 0f)); // b1
+                List<MySprite> spriteList = new List<MySprite>();
+
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -247f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(199, 99, 247, 255), null, TextAlignment.CENTER, 0f)); // b9
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(1f, -167f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(148, 0, 148, 255), null, TextAlignment.CENTER, 0f)); // b8
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -177f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(51, 0, 148, 255), null, TextAlignment.CENTER, 0f)); // b7
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -187f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(0, 148, 197, 255), null, TextAlignment.CENTER, 0f)); // b6
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -197f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(0, 148, 0, 255), null, TextAlignment.CENTER, 0f)); // b5
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -207f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(247, 247, 1, 255), null, TextAlignment.CENTER, 0f)); // b4
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -217f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(246, 148, 0, 255), null, TextAlignment.CENTER, 0f)); // b3
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -227f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(246, 0, 0, 255), null, TextAlignment.CENTER, 0f)); // b2
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(0f, -237f) * scale + centerPos, new Vector2(500f, 10f) * scale, new Color(247, 98, 148, 255), null, TextAlignment.CENTER, 0f)); // b1
 
                 var panelColor = new Color(5, 5, 5, 150);
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(1f, -128f) * scale + centerPos, new Vector2(500f, 50f) * scale, panelColor, null, TextAlignment.CENTER, 0f)); // sprite2
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(1f, 167f) * scale + centerPos, new Vector2(500f, 164f) * scale, panelColor, null, TextAlignment.CENTER, 0f)); // sprite3
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(1f, -8f) * scale + centerPos, new Vector2(500f, 175f) * scale, panelColor, null, TextAlignment.CENTER, 0f)); // sprite4
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareHollow", new Vector2(0f, -206f) * scale + centerPos, new Vector2(500f, 95f) * scale, new Color(42, 42, 42, 255), null, TextAlignment.CENTER, 0f)); // sprite5
-                frame.Add(new MySprite(SpriteType.TEXT, _tag, new Vector2(-230f, -257f) * scale + centerPos, null, Color.Black, "DEBUG", TextAlignment.LEFT, 3f * scale)); // Title
-                frame.Add(new MySprite(SpriteType.TEXT, _mode, new Vector2(-230f, -143f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 1f * scale)); // mode
-                frame.Add(new MySprite(SpriteType.TEXT, _targetName, new Vector2(-230f, -91f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 1f * scale)); // tName
-                frame.Add(new MySprite(SpriteType.TEXT, _targetLocation, new Vector2(-230f, -59f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 0.7f * scale)); // tLocation
-                frame.Add(new MySprite(SpriteType.TEXT, _targetSpeed, new Vector2(-230f, -30f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 0.7f * scale)); // tSpeed
-                frame.Add(new MySprite(SpriteType.TEXT, _targetDistance, new Vector2(-230f, -3f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 0.7f * scale)); // tDistance
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(1f, -128f) * scale + centerPos, new Vector2(500f, 50f) * scale, panelColor, null, TextAlignment.CENTER, 0f)); // sprite2
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(1f, 167f) * scale + centerPos, new Vector2(500f, 164f) * scale, panelColor, null, TextAlignment.CENTER, 0f)); // sprite3
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(1f, -8f) * scale + centerPos, new Vector2(500f, 175f) * scale, panelColor, null, TextAlignment.CENTER, 0f)); // sprite4
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareHollow", new Vector2(0f, -206f) * scale + centerPos, new Vector2(500f, 95f) * scale, new Color(42, 42, 42, 255), null, TextAlignment.CENTER, 0f)); // sprite5
+                spriteList.Add(new MySprite(SpriteType.TEXT, _tag, new Vector2(-230f, -257f) * scale + centerPos, null, Color.Black, "DEBUG", TextAlignment.LEFT, 3f * scale)); // Title
+                spriteList.Add(new MySprite(SpriteType.TEXT, _mode, new Vector2(-230f, -143f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 1f * scale)); // mode
+                spriteList.Add(new MySprite(SpriteType.TEXT, _targetName, new Vector2(-230f, -91f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 1f * scale)); // tName
+                spriteList.Add(new MySprite(SpriteType.TEXT, _targetLocation, new Vector2(-230f, -59f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 0.7f * scale)); // tLocation
+                spriteList.Add(new MySprite(SpriteType.TEXT, _targetSpeed, new Vector2(-230f, -30f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 0.7f * scale)); // tSpeed
+                spriteList.Add(new MySprite(SpriteType.TEXT, _targetDistance, new Vector2(-230f, -3f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 0.7f * scale)); // tDistance
 
                 float xOffset = -550f;
                 float yOffset = 350f;
@@ -1284,29 +1337,60 @@ namespace IngameScript
                 {
                     if (i == 20)
                         break;
-
                     if (i == 10)
                     {
                         xOffset = -550f;
                         yOffset += 150f;
                     }
                     if (i < _activeMissileCount)
-                        DrawMissileSprite(ref frame, new Vector2(xOffset, yOffset), centerPos, _activeMissileColor, 0.4f);
+                        spriteList.AddList(DrawMissileSprite(new Vector2(xOffset, yOffset), centerPos, _activeMissileColor, 0.4f));
                     else
-                        DrawMissileSprite(ref frame, new Vector2(xOffset, yOffset), centerPos, _protoMissileColor, 0.4f);
-
+                        spriteList.AddList(DrawMissileSprite(new Vector2(xOffset, yOffset), centerPos, _protoMissileColor, 0.4f));
                     xOffset += 120f;
                 }
+                return spriteList;
+            }
+            bool WorldPositionToScreenPosition(Vector3D worldPosition, IMyCameraBlock cam, IMyTextPanel screen, out Vector2 screenPositionPx)
+            {
+                screenPositionPx = Vector2.Zero;
+                Vector3D cameraPos = cam.GetPosition() + cam.WorldMatrix.Forward * 0.25;
+                Vector3D screenPosition = screen.GetPosition() + screen.WorldMatrix.Forward * 0.5 * screen.CubeGrid.GridSize;
+                Vector3D normal = screen.WorldMatrix.Forward;
+                Vector3D cameraToScreen = screenPosition - cameraPos;
+                double distanceToScreen = Math.Abs(Vector3D.Dot(cameraToScreen, normal));
 
+                Vector3D viewCenterWorld = distanceToScreen * cam.WorldMatrix.Forward;
+                Vector3D direction = worldPosition - cameraPos;
+                Vector3D directionParallel = direction.Dot(normal) * normal;
+                double distanceRatio = distanceToScreen / directionParallel.Length();
+
+                Vector3D directionOnScreenWorld = distanceRatio * direction;
+                if (directionOnScreenWorld.Dot(screen.WorldMatrix.Forward) < 0)
+                {
+                    return false;
+                }
+                Vector3D planarCameraToScreen = cameraToScreen - Vector3D.Dot(cameraToScreen, normal) * normal;
+                directionOnScreenWorld -= planarCameraToScreen;
+                Vector2 directionOnScreenLocal = new Vector2(
+                    (float)directionOnScreenWorld.Dot(screen.WorldMatrix.Right),
+                    (float)directionOnScreenWorld.Dot(screen.WorldMatrix.Down));
+                double screenWidthInMeters = screen.CubeGrid.GridSize * 0.855f;
+                float metersToPx = (float)(screen.TextureSize.X / screenWidthInMeters);
+                directionOnScreenLocal *= metersToPx;
+                Vector2 screenCenterPx = screen.TextureSize * 0.5f;
+                screenPositionPx = screenCenterPx + directionOnScreenLocal;
+                return true;
             }
 
-            private void DrawMissileSprite(ref MySpriteDrawFrame frame, Vector2 pos, Vector2 centerPos, Color color, float scale)
+            private List<MySprite> DrawMissileSprite(Vector2 pos, Vector2 centerPos, Color color, float scale)
             {
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SemiCircle", pos * scale + centerPos, new Vector2(30f, 90f) * scale, color, null, TextAlignment.CENTER, 0f));
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(pos.X, pos.Y + 22f) * scale + centerPos, new Vector2(30f, 40f) * scale, color, null, TextAlignment.CENTER, 0f));
-                frame.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(pos.X, pos.Y + 64f) * scale + centerPos, new Vector2(30f, 40f) * scale, color, null, TextAlignment.CENTER, 0f));
-                frame.Add(new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(pos.X + 21f, pos.Y + 60f) * scale + centerPos, new Vector2(20f, 30f) * scale, color, null, TextAlignment.CENTER, -0.3491f));
-                frame.Add(new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(pos.X - 21f, pos.Y + 60f) * scale + centerPos, new Vector2(20f, 30f) * scale, color, null, TextAlignment.CENTER, 0.3491f));
+                List<MySprite> spriteList = new List<MySprite>();
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SemiCircle", pos * scale + centerPos, new Vector2(30f, 90f) * scale, color, null, TextAlignment.CENTER, 0f));
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(pos.X, pos.Y + 22f) * scale + centerPos, new Vector2(30f, 40f) * scale, color, null, TextAlignment.CENTER, 0f));
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(pos.X, pos.Y + 64f) * scale + centerPos, new Vector2(30f, 40f) * scale, color, null, TextAlignment.CENTER, 0f));
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(pos.X + 21f, pos.Y + 60f) * scale + centerPos, new Vector2(20f, 30f) * scale, color, null, TextAlignment.CENTER, -0.3491f));
+                spriteList.Add(new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(pos.X - 21f, pos.Y + 60f) * scale + centerPos, new Vector2(20f, 30f) * scale, color, null, TextAlignment.CENTER, 0.3491f));
+                return spriteList;
             }
 
             private int _ticks = 0;
@@ -1321,10 +1405,10 @@ namespace IngameScript
             private string _targetLocation = "";
             private string _targetSpeed = "";
             private string _targetDistance = "";
-            private float _cargoMass = 0;
-              
+            private IMyCameraBlock _camera = null;
+            private List<IMyTextPanel> _hudPanels = new List<IMyTextPanel>();
+            private List<IMyTextPanel> _infoPanels = new List<IMyTextPanel>();
 
-            private List<IMyTextPanel> _displays = new List<IMyTextPanel>();
         }
 
         string[] Quotes =
