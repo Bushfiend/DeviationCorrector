@@ -1,7 +1,6 @@
 ﻿using Sandbox.Game.EntityComponents;
 using Sandbox.Game.Weapons;
 //using Sandbox.ModAPI;
-//using Sandbox.ModAPI;
 using Sandbox.ModAPI.Ingame;
 using Sandbox.ModAPI.Interfaces;
 using SpaceEngineers.Game.ModAPI.Ingame;
@@ -79,11 +78,17 @@ namespace IngameScript
 
         FireMode Mode = FireMode.Weaponcore;
 
-        enum FireMode { Weaponcore, Raycast, Sentry }
+        enum FireMode {
+            Weaponcore,
+            Raycast,
+            RaycastSentry,
+            Sentry
+        }
 
         Random Rand = new Random();
 
         public static long Ticks = 0;
+        public static double Time = 0;
 
         public Program()
         {
@@ -92,11 +97,13 @@ namespace IngameScript
 
         public void Main(string argument, UpdateType updateSource)
         {
-
             if (!Setup())
             {
                 return;
             }
+
+            Ticks += 1;
+            Time += Runtime.TimeSinceLastRun.TotalSeconds;
 
             if (InFireSequence)
             {
@@ -110,7 +117,6 @@ namespace IngameScript
 
             if (HasRaycast)
             {
-                // TODO: Only run this every 10th tick? I think that's what WHAM does
                 RC.Update(1.0 / TicksPerSecond, RaycastArray, Controllers);
             }
 
@@ -121,7 +127,11 @@ namespace IngameScript
 
             if (Mode == FireMode.Sentry && Ticks % 10 == 0)
             {
-                SentryUpdate(SentryRange);
+                WeaponcoreSentryUpdate(SentryRange);
+            }
+            if (Mode == FireMode.RaycastSentry && Ticks % 10 == 0)
+            {
+                RaycastSentryUpdate();
             }
         }
 
@@ -141,8 +151,14 @@ namespace IngameScript
                 case "raycast":
                     Raycast();
                     break;
-                case "mode":
-                    CycleMode();
+                case "raycastsentry":
+                    RaycastSentry();
+                    break;
+                case "weaponcore":
+                    Mode = FireMode.Weaponcore;
+                    break;
+                case "sentry":
+                    Mode = FireMode.Sentry;
                     break;
                 case "reload":
                     Reload();
@@ -166,20 +182,40 @@ namespace IngameScript
             {
                 AlertBlock.SelectedSound = scanSound;
             }
-                
-
-
         }
         void Raycast()
         {
             if (!HasRaycast)
+            {
+                Echo("Raycast is unavailable. Does your group have cameras?");
                 return;
+            }
 
             Mode = FireMode.Raycast;
             if (RC.IsScanning || RC.Status == RaycastHoming.TargetingStatus.Locked)
+            {
+                Echo("Scanning stopped");
                 RC.ClearLock();
+            }
             else
+            {
+                Echo("Scanning for a target...");
                 RC.LockOn();
+            }
+        }
+        void RaycastSentry()
+        {
+            if (Mode == FireMode.RaycastSentry)
+            {
+                // Reset to default
+                Mode = FireMode.Weaponcore;
+                RC.ClearLock();
+                return;
+            }
+
+            Mode = FireMode.RaycastSentry;
+            Echo("Scanning for a target...");
+            RC.LockOn();
         }
 
         void FireCommand(string nameFilter = null)
@@ -215,17 +251,20 @@ namespace IngameScript
                     var location1 = target.Value.Position;
                     Hud.TargetLocation = $"Location: X:{Math.Round(location1.X, 2)} Y:{Math.Round(location1.Y, 2)} Z:{Math.Round(location1.Z, 2)} ";
                     Hud.TargetSpeed = $"Speed: {Math.Round(target.Value.Velocity.Length(), 2)} m/s";
+                    Hud.TargetSize = $"Size: {Math.Round(target.Value.BoundingBox.Size.Length())}";
                     break;
 
                 case FireMode.Raycast:
+                case FireMode.RaycastSentry:
                     if (!HasRaycast)
                         return;
-                    if (RC.Status == RaycastHoming.TargetingStatus.NotLocked && RC.IsScanning)
+                    if ((RC.Status == RaycastHoming.TargetingStatus.NotLocked || RC.Status == RaycastHoming.TargetingStatus.TooClose) && RC.IsScanning)
                     {
                         Hud.TargetName = $"Scanning{Ani[cycle]}";
-                        Hud.TargetDistance = string.Empty;
+                        Hud.TargetDistance = RC.Status == RaycastHoming.TargetingStatus.TooClose ? "Ignoring a target that is too close" : string.Empty;
                         Hud.TargetLocation = string.Empty;
                         Hud.TargetSpeed = string.Empty;
+                        Hud.TargetSize = string.Empty;
                         cycle++;
                         if (cycle == Ani.Length)
                             cycle = 0;
@@ -236,6 +275,7 @@ namespace IngameScript
                         Hud.TargetDistance = string.Empty;
                         Hud.TargetLocation = string.Empty;
                         Hud.TargetSpeed = string.Empty;
+                        Hud.TargetSize = string.Empty;
                     }
                     else if (RC.Status == RaycastHoming.TargetingStatus.Locked)
                     {
@@ -244,6 +284,7 @@ namespace IngameScript
                         var location2 = RC.HitPosition;
                         Hud.TargetLocation = $"Location: X:{Math.Round(location2.X, 2)} Y:{Math.Round(location2.Y, 2)} Z:{Math.Round(location2.Z, 2)} ";
                         Hud.TargetSpeed = $"Speed: {Math.Round(RC.TargetVelocity.Length(), 2)} m/s";
+                        Hud.TargetSize = $"Size: {Math.Round(RC.TargetSize)}";
                         // TODO: Target direction - Closing in (over 50% of speed is towards us), moving away (over 50% of speed is away), stationary (speed is zero), drifting (speed is low), moving sideways (neither moving towards us nor away)
                     }
                     break;
@@ -277,6 +318,7 @@ namespace IngameScript
             switch (Mode)
             {
                 case FireMode.Raycast:
+                case FireMode.RaycastSentry:
                     if (RC.Status != RaycastHoming.TargetingStatus.Locked)
                         return;
                     entityId = RC.TargetId;
@@ -326,24 +368,42 @@ namespace IngameScript
             {
                 case FireMode.Weaponcore:
                     if (!UsingWeaponcore)
+                    {
+                        Echo("WeaponCore is unavailable. Try recompiling");
                         return;
+                    }
                     var target = Wc.GetAiFocus(Me.CubeGrid.EntityId);
                     if (target.Value.EntityId == 0)
+                    {
+                        Echo("WeaponCore has no target locked!");
                         return;
+                    }
                     missile.TargetId = target.Value.EntityId;
                     missile.FireMissile(target.Value.Position);
                     break;
 
                 case FireMode.Raycast:
-                    if (!HasRaycast || RC.Status != RaycastHoming.TargetingStatus.Locked)
+                case FireMode.RaycastSentry:
+                    if (!HasRaycast)
+                    {
+                        Echo("Raycast is unavailable. Does your group have cameras?");
                         return;
+                    }
+                    if (RC.Status != RaycastHoming.TargetingStatus.Locked)
+                    {
+                        Echo("No target locked!");
+                        return;
+                    }
 
                     missile.TargetId = RC.TargetId;
                     missile.FireMissile(RC.TargetPosition);
                     break;
                 case FireMode.Sentry:
                     if (entityId == 0)
+                    {
+                        Echo("No target locked!");
                         return;
+                    }
 
                     missile.FireMissile(Vector3D.Zero);
                     missile.TargetId = entityId;
@@ -358,7 +418,7 @@ namespace IngameScript
 
         void UpdateMissileTargets()
         {
-            if (Mode == FireMode.Raycast)
+            if (Mode == FireMode.Raycast || Mode == FireMode.RaycastSentry)
             {
                 if (RC.Status == RaycastHoming.TargetingStatus.Locked)
                 {
@@ -474,6 +534,7 @@ namespace IngameScript
             var cameras = tempBlocks.FindAll(b => b is IMyCameraBlock);
             if (cameras.Count > 0)
             {
+                Echo("Raycasting is available.");
                 HasRaycast = true;
                 foreach (var block in cameras)
                 {
@@ -517,15 +578,16 @@ namespace IngameScript
                     }
                     infoDisplays.Add(block as IMyTextPanel);
                 }
+
                 if (infoDisplays.Count > 0 && hudDisplays.Count > 0 && mainCamera != null)
                     Hud = new HUD(infoDisplays, hudDisplays, mainCamera);
                 else if (infoDisplays.Count > 0)
-                    Hud = new HUD(infoDisplays);            
+                    Hud = new HUD(infoDisplays);
+
+                Echo($"HUD enabled. Found {infoDisplays.Count} info displays and {hudDisplays.Count} HUD displays");
             }
           
             AlertBlock = tempBlocks.Find(s => s is IMySoundBlock) as IMySoundBlock;      
-
-            
 
             Echo("Setup Complete");
             SetupCompleted = true;
@@ -542,7 +604,7 @@ namespace IngameScript
 
 
         Dictionary<MyDetectedEntityInfo, float> potentialTargets = new Dictionary<MyDetectedEntityInfo, float>();
-        void SentryUpdate(float range = 2000, float threatLevel = 0)
+        void WeaponcoreSentryUpdate(float range = 2000, float threatLevel = 0)
         {
             potentialTargets.Clear();
             Wc.GetSortedThreats(Me, potentialTargets);
@@ -570,7 +632,87 @@ namespace IngameScript
             if (targetList.Count == 0)
                 return;
 
+            var missile = GetMissile();
+            if (missile == null)
+            {
+                Echo("Sentry target acquired, but there are no missiles ready to fire.");
+                return;
+            }
+
             InFireSequence = true;
+            EngagedTargets.Add(targetList.First().EntityId, targetList.First().TimeStamp);
+            FireMissile(missile, GuidanceDelay * TicksPerSecond + 5, targetList.First().EntityId);
+        }
+
+        Dictionary<long, List<IMyShipMergeBlock>> RaycastSentryMissilesByTarget = new Dictionary<long, List<IMyShipMergeBlock>>();
+        Dictionary<long, double> RaycastSentryLastMissileFiredByTarget = new Dictionary<long, double>();
+        void RaycastSentryUpdate()
+        {
+            if (!RC.IsScanning)
+            {
+                RC.LockOn();
+                return;
+            }
+            if (RC.Status != RaycastHoming.TargetingStatus.Locked)
+                return;
+            if (RC.TargetRelation != MyRelationsBetweenPlayerAndBlock.Enemies)
+            {
+                Echo($"Found {RC.TargetName}. Ignoring since they're not an enemy.");
+                IgnoreRaycastTargetAndContinueScanning();
+                return;
+            }
+            var targetSize = RC.TargetSize;
+            var minTargetSize = 0; // TODO: 105.0; // TODO: Refine. I think I saw a NPCs at 102 once, but that probably wasn't even the biggest. If a lower limit targets more actual enemies, then I don't mind if this limit still includes 10% of the NPCs we may encounter
+            Echo($"TargetSize: {targetSize}");
+            if (targetSize < minTargetSize)
+            {
+                // This will also ignore targets that have been hit and lost blocks to get below this threshold. This is by design.
+                // TODO: When ending RaycastSentry mode, reset ignored targets
+                Echo($"Found {RC.TargetName}. Ignoring since they're too small.");
+                IgnoreRaycastTargetAndContinueScanning();
+                return;
+            }
+
+            // Vary the desired missile count based on target size
+            var numMinMissiles = 4;
+            var numMaxMissiles = 12;
+            var numDesiredMissiles = Math.Max(Math.Min((int)Math.Round((targetSize - 100) / 100 * numMaxMissiles), numMaxMissiles), numMinMissiles);
+            var numMinWaves = 2;
+            // It's alright if batches aren't equal
+            var numMissilesPerWave = Math.Round((double)numDesiredMissiles / numMinWaves);
+            // A short delay between each fired missile to avoid them flying too close to each other. Not too much though, as we want early missiles to tank damage so later ones can survive.
+            var missileDelaySeconds = 0.2;
+            // Delay between batches so explosions from the first batch do not destroy the second wave.
+            var waveDelaySeconds = 2.5;
+
+            Echo($"Firing {numDesiredMissiles} missiles in {numMinWaves} waves of {numMissilesPerWave}");
+
+            var targetMissilesFired = RaycastSentryMissilesByTarget.GetValueOrDefault(RC.TargetId);
+            if (targetMissilesFired == null)
+            {
+                targetMissilesFired = new List<IMyShipMergeBlock>(numDesiredMissiles);
+                RaycastSentryMissilesByTarget.Add(RC.TargetId, targetMissilesFired);
+            }
+            var numTargetMissilesFired = targetMissilesFired.Count;
+
+            if (numTargetMissilesFired >= numDesiredMissiles)
+                // TODO: Ignore target so we can acquire a different one? Do we set a timeout after which we try again?
+                return;
+
+            var lastMissileFiredTimeStamp = RaycastSentryLastMissileFiredByTarget.GetValueOrDefault(RC.TargetId);
+            var secondsElapsedSinceLastMissile = Time - lastMissileFiredTimeStamp;
+
+            var nextMissileDelay = missileDelaySeconds;
+            if (numTargetMissilesFired > 0 && numTargetMissilesFired % numMissilesPerWave == 0)
+            {
+                nextMissileDelay = waveDelaySeconds;
+            }
+
+            if (secondsElapsedSinceLastMissile < nextMissileDelay)
+            {
+                Echo($"Waiting to fire next missile. Elapsed: {secondsElapsedSinceLastMissile}");
+                return;
+            }
 
             var missile = GetMissile();
             if (missile == null)
@@ -579,8 +721,17 @@ namespace IngameScript
                 return;
             }
 
-            EngagedTargets.Add(targetList.First().EntityId, targetList.First().TimeStamp);
-            FireMissile(missile, GuidanceDelay * TicksPerSecond + 5, targetList.First().EntityId);
+            InFireSequence = true;
+            Echo($"Fired missile {numTargetMissilesFired + 1}");
+            FireMissile(missile, GuidanceDelay * TicksPerSecond + 5, RC.TargetId);
+            targetMissilesFired.Add(missile);
+            RaycastSentryLastMissileFiredByTarget[RC.TargetId] = Time;
+        }
+        void IgnoreRaycastTargetAndContinueScanning()
+        {
+            RC.AddIgnoredGridID(RC.TargetId);
+            RC.ClearLock();
+            RC.LockOn();
         }
 
 
@@ -1232,6 +1383,11 @@ namespace IngameScript
                 get { return _targetSpeed; }
                 set { _targetSpeed = value; }
             }
+            public string TargetSize
+            {
+                get { return _targetSize; }
+                set { _targetSize = value; }
+            }
             public string TargetDistance
             {
                 get { return _targetDistance; }
@@ -1419,6 +1575,7 @@ namespace IngameScript
                 spriteList.Add(new MySprite(SpriteType.TEXT, _targetLocation, new Vector2(-230f, -59f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 0.7f * scale)); // tLocation
                 spriteList.Add(new MySprite(SpriteType.TEXT, _targetSpeed, new Vector2(-230f, -30f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 0.7f * scale)); // tSpeed
                 spriteList.Add(new MySprite(SpriteType.TEXT, _targetDistance, new Vector2(-230f, -3f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 0.7f * scale)); // tDistance
+                spriteList.Add(new MySprite(SpriteType.TEXT, _targetSize, new Vector2(-230f, 24f) * scale + centerPos, null, Color.DarkRed, "DEBUG", TextAlignment.LEFT, 0.7f * scale)); // tSize
 
                 float xOffset = -550f;
                 float yOffset = 350f;
@@ -1495,6 +1652,7 @@ namespace IngameScript
             private string _targetName = "";
             private string _targetLocation = "";
             private string _targetSpeed = "";
+            private string _targetSize = "";
             private string _targetDistance = "";
             private IMyCameraBlock _camera = null;
             private List<IMyTextPanel> _hudPanels = new List<IMyTextPanel>();
@@ -1543,12 +1701,6 @@ namespace IngameScript
             public double MaxTimeForLockBreak { get; private set; }
             public MyRelationsBetweenPlayerAndBlock TargetRelation { get; private set; }
             public MyDetectedEntityType TargetType { get; private set; }
-            public long TimeSinceLastRaycast { 
-                get
-                {
-                    return (_currentTimeStamp - _lastTimeStamp);
-                } 
-            }
 
             public enum TargetingStatus { NotLocked, Locked, TooClose };
             enum AimMode { Center, Offset, OffsetRelative };
@@ -1564,8 +1716,6 @@ namespace IngameScript
             double _timeSinceLastScan = 0;
             bool _manualLockOverride = false;
             bool _fudgeVectorSwitch = false;
-            long _lastTimeStamp = 0;
-            long _currentTimeStamp = 0;
             long _ticks = 0;
             double AutoScanScaleFactor
             {
@@ -1850,9 +2000,6 @@ namespace IngameScript
 
                     MissedLastScan = false;
                     UpdateTargetStateVectors(info.Position, info.HitPosition.Value, info.Velocity);
-
-                    _lastTimeStamp = _currentTimeStamp;
-                    _currentTimeStamp = _ticks;
 
                     TargetSize = info.BoundingBox.Size.Length();
                     _targetOrientation = info.Orientation;
